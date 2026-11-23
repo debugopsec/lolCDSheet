@@ -785,6 +785,10 @@ def run_gui(args):
             self.q: queue.Queue = queue.Queue()
             self.photo_cache: dict = {}
             self.view = None
+            self._render_key = None
+            self._render_geo = None
+            self._note = None
+            self._wheel_bound = False
 
             root.title("LoL Cooldown Sheet")
             root.configure(bg=BG)
@@ -793,7 +797,7 @@ def run_gui(args):
             self.show_ranges = tk.BooleanVar(value=not args.no_ranges)
             self.columns = tk.IntVar(value=max(1, min(5, args.columns)))
             root.attributes("-topmost", self.topmost.get())
-            root.geometry("+20+20")
+            root.geometry(f"{min(560, root.winfo_screenwidth() - 40)}x420+20+20")
 
             bar = tk.Frame(root, bg=BG, padx=8, pady=6)
             bar.pack(fill="x")
@@ -811,15 +815,19 @@ def run_gui(args):
             # Scrollable body
             wrap = tk.Frame(root, bg=BG)
             wrap.pack(fill="both", expand=True)
-            self.canvas = tk.Canvas(wrap, bg=BG, highlightthickness=0, width=460, height=120)
-            sb = tk.Scrollbar(wrap, orient="vertical", command=self.canvas.yview)
+            self.canvas = tk.Canvas(wrap, bg=BG, highlightthickness=0, bd=0)
+            self.sb = sb = tk.Scrollbar(wrap, orient="vertical", command=self.canvas.yview)
             self.canvas.configure(yscrollcommand=sb.set)
             sb.pack(side="right", fill="y")
             self.canvas.pack(side="left", fill="both", expand=True)
             self.body = tk.Frame(self.canvas, bg=BG, padx=8, pady=4)
-            self.canvas.create_window((0, 0), window=self.body, anchor="nw")
-            self.body.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-            root.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-e.delta / 120), "units"))
+            self._body_id = self.canvas.create_window((0, 0), window=self.body, anchor="nw")
+            # Body inside the canvas: keep it exactly as wide as the canvas so it reflows with the window.
+            self.canvas.bind("<Configure>", self._on_canvas_resize)
+            self.body.bind("<Configure>", self._on_body_resize)
+            # Scroll the sheet only while the pointer is over it (not over another app).
+            root.bind("<Enter>", self._bind_wheel)
+            root.bind("<Leave>", self._unbind_wheel)
 
             tk.Label(self.body, text="Waiting for a game to start…\n\nThe sheet fills in automatically once you're "
                                      "loaded into the game.", fg=MUTED, bg=BG, font=(UI_FONT, 10),
@@ -893,6 +901,30 @@ def run_gui(args):
         def apply_topmost(self):
             self.root.attributes("-topmost", self.topmost.get())
 
+        def _bind_wheel(self, _e=None):
+            if not self._wheel_bound:
+                self.root.bind_all("<MouseWheel>", self._on_wheel)
+                self._wheel_bound = True
+
+        def _unbind_wheel(self, _e=None):
+            if self._wheel_bound:
+                self.root.unbind_all("<MouseWheel>")
+                self._wheel_bound = False
+
+        def _on_wheel(self, e):
+            # Only scroll when there is something to scroll, so it doesn't fight other windows' scrolling.
+            if self.canvas.bbox("all") and self.canvas.bbox("all")[3] > self.canvas.winfo_height():
+                self.canvas.yview_scroll(int(-e.delta / 120), "units")
+
+        def _on_canvas_resize(self, e):
+            self.canvas.itemconfigure(self._body_id, width=max(1, e.width))
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+            if self._note is not None:
+                self._note.configure(wraplength=max(240, e.width - 24))
+
+        def _on_body_resize(self, _e=None):
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
         def photo(self, path, zoom, sub):
             if not path:
                 return None
@@ -909,15 +941,35 @@ def run_gui(args):
                     self.photo_cache[key] = None
             return self.photo_cache[key]
 
+        def render_key(self, cols: int):
+            """Everything visible in the body. A redraw is only needed when this changes, so the sheet no
+            longer gets torn down and rebuilt every time the watcher reports the same game again."""
+            groups = tuple((title, tuple(
+                (e["champion"], e["position"], e["player"], e["error"], str(e["icon"]),
+                 tuple((a["key"], a["name"], a["cd"], a["recharge"], a["range"], str(a["icon"]))
+                       for a in e["abilities"]),
+                 tuple((s["name"], s["cd"], str(s["icon"])) for s in e["summoners"]))
+                for e in entries))
+                for title, entries in (self.view or {}).get("groups", []))
+            return (groups, self.view.get("mode"), self.view.get("version"), cols,
+                    self.show_names.get(), self.show_ranges.get())
+
         def rerender(self):
             if not self.view:
                 return
-            for w in self.body.winfo_children():
-                w.destroy()
             try:
                 cols = max(1, min(5, int(self.columns.get())))
             except (tk.TclError, ValueError):
                 cols = 1
+            key = self.render_key(cols)
+            if key == self._render_key:
+                return  # same content on screen already: rebuilding it is what made the window flicker
+            self._render_key = key
+            # Hide the body while it is rebuilt, then show it again: one paint instead of dozens.
+            self.canvas.itemconfigure(self._body_id, state="hidden")
+            for w in self.body.winfo_children():
+                w.destroy()
+            self._note = None
             for title, entries in self.view["groups"]:
                 tk.Label(self.body, text=title.upper(), fg=MUTED, bg=BG,
                          font=(UI_FONT, 9, "bold")).pack(anchor="w", pady=(6, 2))
@@ -930,16 +982,33 @@ def run_gui(args):
             if self.show_ranges.get():
                 note += (" Ranges in game units: \"AoE N\" = radius around them, \"AA\" = empowered basic "
                          "attack, \"A–B\" = grows while charging / with level, \"/\" = per rank.")
-            tk.Label(self.body, text=note,
-                     wraplength=440, justify="left",
-                     fg=MUTED, bg=BG, font=(UI_FONT, 8)).pack(anchor="w", pady=(4, 2))
-            self.fit_window()
+            self._note = tk.Label(self.body, text=note,
+                                  wraplength=max(240, self.canvas.winfo_width() - 24), justify="left",
+                                  fg=MUTED, bg=BG, font=(UI_FONT, 8))
+            self._note.pack(anchor="w", pady=(4, 2))
+            self.fit_window(force=True)
+            self.canvas.itemconfigure(self._body_id, state="normal")
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+            self.canvas.yview_moveto(0)
 
-        def fit_window(self):
-            self.body.update_idletasks()
-            w = self.body.winfo_reqwidth()
-            h = min(self.body.winfo_reqheight(), self.root.winfo_screenheight() - 140)
-            self.canvas.configure(width=w, height=h)
+        def fit_window(self, force: bool = False):
+            """Size the window to the sheet, capped to the screen (the rest scrolls). Only changes geometry
+            when the sheet's size actually changed, so it doesn't jump around between updates."""
+            self.root.update_idletasks()
+            sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+            x, y = self.root.winfo_x(), self.root.winfo_y()
+            chrome_w, chrome_h = self.root.winfo_width() - self.canvas.winfo_width(), \
+                self.root.winfo_height() - self.canvas.winfo_height()
+            need_w = self.body.winfo_reqwidth() + chrome_w + 8
+            need_h = self.body.winfo_reqheight() + chrome_h + 8
+            w = max(360, min(need_w, sw - 40))
+            h = max(160, min(need_h, sh - 80))
+            x = max(0, min(x, sw - w))
+            y = max(0, min(y, sh - h))
+            geo = (w, h, x, y)
+            if force or geo != self._render_geo:
+                self._render_geo = geo
+                self.root.geometry(f"{w}x{h}+{x}+{y}")
 
         def card(self, parent, e):
             card = tk.Frame(parent, bg=CARD, padx=8, pady=4, highlightthickness=1, highlightbackground=BORDER)
