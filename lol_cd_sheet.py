@@ -42,6 +42,9 @@ DDRAGON = "https://ddragon.leagueoflegends.com"
 # Raw game data; Data Dragon has no recharge times for charge-based abilities (Corki R, Zyra W, ...).
 CDRAGON = "https://raw.communitydragon.org"
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
+# Window position/size, remembered across runs. Kept out of the repo folder so it isn't committed.
+CONFIG_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "LoLCooldownSheet"
+CONFIG_FILE = CONFIG_DIR / "window.json"
 POLL_SECONDS = 2
 
 POS_ORDER = {"TOP": 0, "JUNGLE": 1, "MIDDLE": 2, "BOTTOM": 3, "UTILITY": 4}
@@ -175,6 +178,28 @@ def version_key(v: str):
         return tuple(int(x) for x in v.split("."))
     except ValueError:
         return (-1,)
+
+
+def load_window_state() -> dict | None:
+    """Window geometry saved by the last run, or None if there is nothing usable."""
+    try:
+        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    geo = data.get("geometry") if isinstance(data, dict) else None
+    if not (isinstance(geo, list) and len(geo) == 4 and all(isinstance(v, int) for v in geo)):
+        return None
+    return data
+
+
+def save_window_state(state: dict):
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = CONFIG_FILE.with_name(CONFIG_FILE.name + ".tmp")
+        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        tmp.replace(CONFIG_FILE)
+    except OSError:
+        pass
 
 
 def fmt_cd(values) -> str:
@@ -797,7 +822,23 @@ def run_gui(args):
             self.show_ranges = tk.BooleanVar(value=not args.no_ranges)
             self.columns = tk.IntVar(value=max(1, min(5, args.columns)))
             root.attributes("-topmost", self.topmost.get())
-            root.geometry(f"{min(560, root.winfo_screenwidth() - 40)}x420+20+20")
+            # Remember where the window was last time (and its size). If the saved spot is no longer on
+            # any monitor (unplugged display, resolution change), fall back to the top-left corner.
+            saved = load_window_state() or {}
+            self._restored = bool(saved)
+            geo_x, geo_y = 20, 20
+            geo_w, geo_h = min(560, root.winfo_screenwidth() - 40), 420
+            if saved:
+                geo_w, geo_h, geo_x, geo_y = saved["geometry"]
+                vx, vy = root.winfo_vrootx(), root.winfo_vrooty()
+                vw, vh = root.winfo_vrootwidth(), root.winfo_vrootheight()
+                if not (vx <= geo_x < vx + vw and vy <= geo_y < vy + vh):
+                    geo_x, geo_y = 20, 20
+            self._saved_geo = (geo_w, geo_h, geo_x, geo_y)
+            root.geometry(f"{geo_w}x{geo_h}+{geo_x}+{geo_y}")
+            self._save_job = None
+            root.bind("<Configure>", self._remember_geometry, add="+")
+            root.protocol("WM_DELETE_WINDOW", self.on_close)
 
             bar = tk.Frame(root, bg=BG, padx=8, pady=6)
             bar.pack(fill="x")
@@ -806,10 +847,13 @@ def run_gui(args):
             opts = dict(bg=BG, fg=MUTED, selectcolor=CARD, activebackground=BG, activeforeground=FG,
                         font=(UI_FONT, 9), highlightthickness=0, bd=0)
             tk.Checkbutton(bar, text="On top", variable=self.topmost, command=self.apply_topmost, **opts).pack(side="right")
-            tk.Checkbutton(bar, text="Ranges", variable=self.show_ranges, command=self.rerender, **opts).pack(side="right")
-            tk.Checkbutton(bar, text="Names", variable=self.show_names, command=self.rerender, **opts).pack(side="right")
+            tk.Checkbutton(bar, text="Ranges", variable=self.show_ranges,
+                           command=lambda: self.rerender(refit=True), **opts).pack(side="right")
+            tk.Checkbutton(bar, text="Names", variable=self.show_names,
+                           command=lambda: self.rerender(refit=True), **opts).pack(side="right")
             tk.Label(bar, text="Cols", fg=MUTED, bg=BG, font=(UI_FONT, 9)).pack(side="right", padx=(8, 2))
-            tk.Spinbox(bar, from_=1, to=5, width=2, textvariable=self.columns, command=self.rerender,
+            tk.Spinbox(bar, from_=1, to=5, width=2, textvariable=self.columns,
+                       command=lambda: self.rerender(refit=True),
                        bg=CARD, fg=FG, buttonbackground=CARD, relief="flat", font=(UI_FONT, 9)).pack(side="right")
 
             # Scrollable body
@@ -901,6 +945,31 @@ def run_gui(args):
         def apply_topmost(self):
             self.root.attributes("-topmost", self.topmost.get())
 
+        def _remember_geometry(self, event=None):
+            """Debounced save of where the user put the window / how big they made it."""
+            if event is not None and event.widget is not self.root:
+                return
+            if self.root.state() != "normal":
+                return  # minimised / maximised: keep the last real position
+            if self._save_job is not None:
+                self.root.after_cancel(self._save_job)
+            self._save_job = self.root.after(800, self._save_geometry)
+
+        def _save_geometry(self):
+            self._save_job = None
+            geo = (self.root.winfo_width(), self.root.winfo_height(),
+                   self.root.winfo_x(), self.root.winfo_y())
+            self._saved_geo = geo
+            save_window_state({"geometry": list(geo)})
+
+        def on_close(self):
+            if self._save_job is not None:
+                self.root.after_cancel(self._save_job)
+                self._save_job = None
+            self._save_geometry()
+            self._unbind_wheel()
+            self.root.destroy()
+
         def _bind_wheel(self, _e=None):
             if not self._wheel_bound:
                 self.root.bind_all("<MouseWheel>", self._on_wheel)
@@ -954,7 +1023,7 @@ def run_gui(args):
             return (groups, self.view.get("mode"), self.view.get("version"), cols,
                     self.show_names.get(), self.show_ranges.get())
 
-        def rerender(self):
+        def rerender(self, refit: bool = False):
             if not self.view:
                 return
             try:
@@ -986,26 +1055,30 @@ def run_gui(args):
                                   wraplength=max(240, self.canvas.winfo_width() - 24), justify="left",
                                   fg=MUTED, bg=BG, font=(UI_FONT, 8))
             self._note.pack(anchor="w", pady=(4, 2))
-            self.fit_window(force=True)
+            self.fit_window(force=refit or (self._render_geo is None and not self._restored))
             self.canvas.itemconfigure(self._body_id, state="normal")
             self.canvas.configure(scrollregion=self.canvas.bbox("all"))
             self.canvas.yview_moveto(0)
 
         def fit_window(self, force: bool = False):
-            """Size the window to the sheet, capped to the screen (the rest scrolls). Only changes geometry
-            when the sheet's size actually changed, so it doesn't jump around between updates."""
+            """Size the window to the sheet, capped to the monitor (the rest scrolls). Never moves the
+            window: the top-left corner stays exactly where the user put it. Normal updates only grow
+            the window when the sheet needs more room; it never shrinks itself."""
             self.root.update_idletasks()
-            sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
             x, y = self.root.winfo_x(), self.root.winfo_y()
-            chrome_w, chrome_h = self.root.winfo_width() - self.canvas.winfo_width(), \
-                self.root.winfo_height() - self.canvas.winfo_height()
-            need_w = self.body.winfo_reqwidth() + chrome_w + 8
-            need_h = self.body.winfo_reqheight() + chrome_h + 8
-            w = max(360, min(need_w, sw - 40))
-            h = max(160, min(need_h, sh - 80))
-            x = max(0, min(x, sw - w))
-            y = max(0, min(y, sh - h))
-            geo = (w, h, x, y)
+            vx, vy = self.root.winfo_vrootx(), self.root.winfo_vrooty()
+            vw, vh = self.root.winfo_vrootwidth(), self.root.winfo_vrootheight()
+            chrome_w = self.root.winfo_width() - self.canvas.winfo_width()
+            chrome_h = self.root.winfo_height() - self.canvas.winfo_height()
+            # Grow right/down only as far as the virtual desktop allows from this corner.
+            max_w = max(360, vx + vw - x - 16)
+            max_h = max(160, vy + vh - y - 16)
+            w = max(360, min(self.body.winfo_reqwidth() + chrome_w + 8, max_w))
+            h = max(160, min(self.body.winfo_reqheight() + chrome_h + 8, max_h))
+            if not force:
+                w = max(w, min(self.root.winfo_width(), max_w))
+                h = max(h, min(self.root.winfo_height(), max_h))
+            geo = (w, h)
             if force or geo != self._render_geo:
                 self._render_geo = geo
                 self.root.geometry(f"{w}x{h}+{x}+{y}")
