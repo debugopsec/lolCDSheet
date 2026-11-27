@@ -1,5 +1,5 @@
 # LoL Cooldown Sheet
 
-Requires Python 3 (Tkinter included).
+Requires Python 3. The standard Windows installer from python.org includes everything it needs.
 
-Run `run.bat` to start.
+Run `run.bat` — it checks for Python and opens the sheet.
