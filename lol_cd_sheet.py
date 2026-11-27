@@ -42,6 +42,12 @@ DDRAGON = "https://ddragon.leagueoflegends.com"
 # Raw game data; Data Dragon has no recharge times for charge-based abilities (Corki R, Zyra W, ...).
 CDRAGON = "https://raw.communitydragon.org"
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
+# Ability ranges taken from the LoL wiki's ability data (generated table next to this file). Kept separate
+# because it is ~700 entries and gets regenerated when the wiki changes.
+try:
+    from wiki_ranges import RANGES as WIKI_RANGES
+except ImportError:  # table missing: everything falls back to Data Dragon
+    WIKI_RANGES = {}
 # Window position/size, remembered across runs. Kept out of the repo folder so it isn't committed.
 CONFIG_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "LoLCooldownSheet"
 CONFIG_FILE = CONFIG_DIR / "window.json"
@@ -183,7 +189,7 @@ def version_key(v: str):
 def load_window_state() -> dict | None:
     """Window geometry saved by the last run, or None if there is nothing usable."""
     try:
-        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     geo = data.get("geometry") if isinstance(data, dict) else None
@@ -200,6 +206,34 @@ def save_window_state(state: dict):
         tmp.replace(CONFIG_FILE)
     except OSError:
         pass
+
+
+def monitor_bounds(root) -> tuple[int, int, int, int] | None:
+    """Work area of the monitor the window is currently on, in the same coordinates Tk uses.
+    None when this isn't Windows / the query fails (the caller then falls back to the whole desktop)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+        hwnd = int(root.wm_frame(), 16)
+        mon = user32.MonitorFromWindow(wintypes.HWND(hwnd), 2)  # MONITOR_DEFAULTTONEAREST
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if not mon or not user32.GetMonitorInfoW(mon, ctypes.byref(info)):
+            return None
+        # Win32 reports physical pixels; Tk geometry is in DPI-scaled units.
+        scale = (user32.GetDpiForWindow(wintypes.HWND(hwnd)) or 96) / 96 if hasattr(user32, "GetDpiForWindow") else 1
+        r = info.rcWork
+        return (round(r.left / scale), round(r.top / scale),
+                round((r.right - r.left) / scale), round((r.bottom - r.top) / scale))
+    except Exception:
+        return None
 
 
 def fmt_cd(values) -> str:
@@ -684,7 +718,7 @@ def build_entry(dd: DataDragon, p: dict, want_icons: bool, quick: bool = False) 
                     "name": s["name"],
                     "cd": cd,
                     "recharge": recharge,
-                    "range": RANGE_OVERRIDES.get(s["id"]) or fmt_range(s.get("range")),
+                    "range": WIKI_RANGES.get(s["id"]) or RANGE_OVERRIDES.get(s["id"]) or fmt_range(s.get("range")),
                     "icon": f"img/spell/{s['image']['full']}" if want_icons else None,
                 })
         except Exception as e:  # network hiccup etc.
@@ -1049,8 +1083,9 @@ def run_gui(args):
             note = ("Base cooldowns before ability haste (Data Dragon; charge recharge times from CommunityDragon). "
                     "\"recharge ×N\" = time per charge, N max charges.")
             if self.show_ranges.get():
-                note += (" Ranges in game units: \"AoE N\" = radius around them, \"AA\" = empowered basic "
-                         "attack, \"A–B\" = grows while charging / with level, \"/\" = per rank.")
+                note += (" Ranges from the League of Legends wiki, in game units: \"AoE N\" = radius around them, "
+                         "\"AA\" = empowered basic attack, \"A–B\" = grows while charging / with level, "
+                         "\"/\" = per rank.")
             self._note = tk.Label(self.body, text=note,
                                   wraplength=max(240, self.canvas.winfo_width() - 24), justify="left",
                                   fg=MUTED, bg=BG, font=(UI_FONT, 8))
@@ -1066,18 +1101,22 @@ def run_gui(args):
             the window when the sheet needs more room; it never shrinks itself."""
             self.root.update_idletasks()
             x, y = self.root.winfo_x(), self.root.winfo_y()
-            vx, vy = self.root.winfo_vrootx(), self.root.winfo_vrooty()
-            vw, vh = self.root.winfo_vrootwidth(), self.root.winfo_vrootheight()
+            mon = monitor_bounds(self.root)
+            if mon:
+                mx, my, mw, mh = mon
+            else:  # unknown desktop: use the whole virtual desktop
+                mx, my = self.root.winfo_vrootx(), self.root.winfo_vrooty()
+                mw, mh = self.root.winfo_vrootwidth(), self.root.winfo_vrootheight()
             chrome_w = self.root.winfo_width() - self.canvas.winfo_width()
             chrome_h = self.root.winfo_height() - self.canvas.winfo_height()
-            # Grow right/down only as far as the virtual desktop allows from this corner.
-            max_w = max(360, vx + vw - x - 16)
-            max_h = max(160, vy + vh - y - 16)
+            # Grow right/down only as far as this monitor allows from the current corner.
+            max_w = max(360, mx + mw - x - 16)
+            max_h = max(160, my + mh - y - 16)
             w = max(360, min(self.body.winfo_reqwidth() + chrome_w + 8, max_w))
             h = max(160, min(self.body.winfo_reqheight() + chrome_h + 8, max_h))
-            if not force:
-                w = max(w, min(self.root.winfo_width(), max_w))
-                h = max(h, min(self.root.winfo_height(), max_h))
+            if not force and self.root.winfo_width() <= max_w and self.root.winfo_height() <= max_h:
+                w = max(w, self.root.winfo_width())
+                h = max(h, self.root.winfo_height())
             geo = (w, h)
             if force or geo != self._render_geo:
                 self._render_geo = geo
