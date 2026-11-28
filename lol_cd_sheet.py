@@ -2033,11 +2033,11 @@ def run_gui(args):
                     self.show_names.get(), self.show_ranges.get())
 
         def now_text(self, entry, ability):
-            """Label text/colour for the 'now' cooldown, or blank when there is no level yet."""
+            """Label text/colour for the current cooldown, or blank when there is no level yet."""
             if ability.get("now") is None or not entry.get("level"):
                 return "", NOW_FG
             maxed = ability["rank"] >= ability["maxrank"]
-            return f"  now {ability['now']:g}s R{ability['rank']}", (MAX_FG if maxed else NOW_FG)
+            return f"  {ability['key']} {ability['now']:g}s", (MAX_FG if maxed else NOW_FG)
 
         def _flat_entries(self):
             return [e for _, entries in (self.view or {}).get("groups", []) for e in entries]
@@ -2084,8 +2084,8 @@ def run_gui(args):
                     self._card_refs.append(ref)
             self._update_live_fields()
             note = ("Base cooldowns before ability haste (Data Dragon; charge recharge times from CommunityDragon). "
-                    "\"recharge ×N\" = time per charge, N max charges. \"now\" = the cooldown at that enemy's "
-                    "current level (most popular leveling order), green once the ability is maxed.")
+                    "\"recharge ×N\" = time per charge, N max charges. \"Q 10s\" = that ability's cooldown at "
+                    "the enemy's current level (most popular leveling order), green once it is maxed.")
             if self.show_ranges.get():
                 note += (" Ranges from the League of Legends wiki, in game units: \"AoE N\" = radius around them, "
                          "\"AA\" = empowered basic attack, \"A–B\" = grows while charging / with level, "
