@@ -1605,9 +1605,10 @@ def run_gui(args):
             self.tab_sheet.bind("<Button-1>", lambda _e: self.show_mode("sheet"))
             self.tab_quiz.bind("<Button-1>", lambda _e: self.show_mode("quiz"))
             self.status = tk.Label(bar, text="Loading Data Dragon…", fg=MUTED, bg=BG, font=(UI_FONT, 9), anchor="w")
-            self.status.pack(side="left", fill="x", expand=True)
             opts = dict(bg=BG, fg=MUTED, selectcolor=CARD, activebackground=BG, activeforeground=FG,
                         font=(UI_FONT, 9), highlightthickness=0, bd=0)
+            # Pack the fixed-width controls before the status text, otherwise the status steals their room
+            # when the window is narrow.
             tk.Checkbutton(bar, text="On top", variable=self.topmost, command=self.apply_topmost, **opts).pack(side="right")
             # Sheet-only options (hidden on the quiz tab, which doesn't use them).
             self.sheet_opts = tk.Frame(bar, bg=BG)
@@ -1621,6 +1622,7 @@ def run_gui(args):
                        textvariable=self.columns, command=lambda: self.rerender(refit=True),
                        bg=CARD, fg=FG, buttonbackground=CARD, relief="flat",
                        font=(UI_FONT, 9)).pack(side="right")
+            self.status.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
             # Scrollable body
             wrap = tk.Frame(root, bg=BG)
@@ -2141,17 +2143,7 @@ def run_gui(args):
                 self._grids.append((grid, cards))
             self._render_cols = cols
             self._update_live_fields()
-            note = ("Base cooldowns before ability haste (Data Dragon; charge recharge times from CommunityDragon). "
-                    "\"recharge ×N\" = time per charge, N max charges. \"Q 10s\" = that ability's cooldown at "
-                    "the enemy's current level (most popular leveling order), green once it is maxed.")
-            if self.show_ranges.get():
-                note += (" Ranges from the League of Legends wiki, in game units: \"AoE N\" = radius around them, "
-                         "\"AA\" = empowered basic attack, \"A–B\" = grows while charging / with level, "
-                         "\"/\" = per rank.")
-            self._note = tk.Label(self.body, text=note,
-                                  wraplength=max(240, self.canvas.winfo_width() - 24), justify="left",
-                                  fg=MUTED, bg=BG, font=(UI_FONT, 8))
-            self._note.pack(anchor="w", pady=(4, 2))
+            self._note = None
             self.fit_window(force=refit or (self._render_geo is None and not self._restored))
             self.canvas.itemconfigure(self._body_id, state="normal")
             self.canvas.configure(scrollregion=self.canvas.bbox("all"))
