@@ -1557,9 +1557,12 @@ def run_gui(args):
             self._render_key = None
             self._render_geo = None
             self._card_refs = []
+            self._grids = []
             self._render_cols = 0
             self._card_w = 0
             self._reflow_job = None
+            self._resize_job = None
+            self._pending_width = 0
             self._note = None
             self._wheel_bound = False
 
@@ -2019,12 +2022,27 @@ def run_gui(args):
                 self.rerender()
 
         def _on_canvas_resize(self, e):
-            self.canvas.itemconfigure(self._body_id, width=max(1, e.width))
+            # Repainting ~250 widgets on every drag step is what made resizing lag (about 120 ms per
+            # step). Take the sheet off the canvas while the size keeps changing and put it back, once,
+            # after the drag settles.
+            self._pending_width = e.width
+            if self._resize_job is None and self.view:
+                self.canvas.itemconfigure(self._body_id, state="hidden")
+            if self._resize_job is not None:
+                self.root.after_cancel(self._resize_job)
+            self._resize_job = self.root.after(180, self._apply_pending_width)
+
+        def _apply_pending_width(self):
+            self._resize_job = None
+            width = getattr(self, "_pending_width", 0)
+            if width:
+                self.canvas.itemconfigure(self._body_id, width=max(1, width))
+                if self._note is not None:
+                    self._note.configure(wraplength=max(240, width - 24))
+            self.canvas.itemconfigure(self._body_id, state="normal")
             self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-            if self._note is not None:
-                self._note.configure(wraplength=max(240, e.width - 24))
-            if self._reflow_job is None and self.view:
-                self._reflow_job = self.root.after(120, self._auto_reflow)
+            if self.view and self._reflow_job is None:
+                self._reflow_job = self.root.after(60, self._auto_reflow)
 
         def _on_body_resize(self, _e=None):
             self.canvas.configure(scrollregion=self.canvas.bbox("all"))
@@ -2045,9 +2063,9 @@ def run_gui(args):
                     self.photo_cache[key] = None
             return self.photo_cache[key]
 
-        def render_key(self, cols: int):
-            """Structure of what is on screen (champions, cooldowns, ranges, toggles). Levels and the
-            per-level "now" values are deliberately NOT in here: they change constantly and are updated
+        def render_key(self):
+            """Structure of what is on screen (champions, cooldowns, ranges, toggles). Levels, the
+            per-level "now" values and the column count are deliberately NOT in here: they are updated
             in place instead of rebuilding the cards."""
             groups = tuple((title, tuple(
                 (e["champion"], e["position"], e["player"], e["error"], str(e["icon"]),
@@ -2056,8 +2074,15 @@ def run_gui(args):
                  tuple((s["name"], s["cd"], str(s["icon"])) for s in e["summoners"]))
                 for e in entries))
                 for title, entries in (self.view or {}).get("groups", []))
-            return (groups, self.view.get("mode"), self.view.get("version"), cols,
+            return (groups, self.view.get("mode"), self.view.get("version"),
                     self.show_names.get(), self.show_ranges.get())
+
+        def _apply_layout(self, cols: int):
+            """Re-grid the existing cards. Cheap enough to run while the window is being dragged."""
+            for grid, cards in self._grids:
+                for i, card in enumerate(cards):
+                    card.grid_configure(row=i // cols, column=i % cols)
+            self._render_cols = cols
 
         def now_text(self, entry, ability):
             """Label text/colour for the current cooldown, or blank when there is no level yet."""
@@ -2086,29 +2111,35 @@ def run_gui(args):
             if not self.view:
                 return
             cols = self.cols_count()
-            key = self.render_key(cols)
+            key = self.render_key()
             if key == self._render_key:
-                self._update_live_fields()  # level / "now" changed only: no rebuild
+                if cols != self._render_cols and self._grids:
+                    self._apply_layout(cols)  # resized: just re-grid, never rebuild
+                self._update_live_fields()
                 return
             self._render_key = key
-            self._render_cols = cols
             # Hide the body while it is rebuilt, then show it again: one paint instead of dozens.
             self.canvas.itemconfigure(self._body_id, state="hidden")
             for w in self.body.winfo_children():
                 w.destroy()
             self._card_refs = []
+            self._grids = []
             self._note = None
             for title, entries in self.view["groups"]:
                 tk.Label(self.body, text=title.upper(), fg=MUTED, bg=BG,
                          font=(UI_FONT, 9, "bold")).pack(anchor="w", pady=(6, 2))
                 grid = tk.Frame(self.body, bg=BG)
                 grid.pack(anchor="w")
+                cards = []
                 for i, e in enumerate(entries):
                     card, ref = self.card(grid, e)
                     card.grid(row=i // cols, column=i % cols, sticky="nsew", padx=3, pady=3)
+                    cards.append(card)
                     self._card_refs.append(ref)
                     if cols == 1:  # only a single column gives the card its natural width
                         self._card_w = max(getattr(self, "_card_w", 0), card.winfo_reqwidth())
+                self._grids.append((grid, cards))
+            self._render_cols = cols
             self._update_live_fields()
             note = ("Base cooldowns before ability haste (Data Dragon; charge recharge times from CommunityDragon). "
                     "\"recharge ×N\" = time per charge, N max charges. \"Q 10s\" = that ability's cooldown at "
