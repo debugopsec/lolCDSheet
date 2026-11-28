@@ -1114,10 +1114,10 @@ def build_entry(dd: DataDragon, p: dict, want_icons: bool, quick: bool = False) 
             for key, s in zip("QWER", c["spells"]):
                 cd, recharge = ability_cds(s, extras.get(s["id"]))
                 rank = skill_rank(c["name"], key, entry["level"])
-                raw = [v for v in (s.get("cooldown") or []) if isinstance(v, (int, float))]
-                now = raw[min(rank, len(raw)) - 1] if raw else None
-                if not now:  # Data Dragon says 0 for a few (Veigar W); the bin value is used above
-                    now = None
+                # "now" uses the same corrected numbers the sheet shows, not Data Dragon's raw field
+                # (Rengar's raw cooldowns are all 0.25s placeholders).
+                vals = [float(v) for v in re.findall(r"\d+(?:\.\d+)?", cd)]
+                now = vals[min(rank - 1, len(vals) - 1)] if vals else None
                 entry["abilities"].append({
                     "key": key,
                     "name": s["name"],
@@ -1301,12 +1301,15 @@ def run_gui(args):
             opts = dict(bg=BG, fg=MUTED, selectcolor=CARD, activebackground=BG, activeforeground=FG,
                         font=(UI_FONT, 9), highlightthickness=0, bd=0)
             tk.Checkbutton(bar, text="On top", variable=self.topmost, command=self.apply_topmost, **opts).pack(side="right")
-            tk.Checkbutton(bar, text="Ranges", variable=self.show_ranges,
+            # Sheet-only options (hidden on the quiz tab, which doesn't use them).
+            self.sheet_opts = tk.Frame(bar, bg=BG)
+            self.sheet_opts.pack(side="right")
+            tk.Checkbutton(self.sheet_opts, text="Ranges", variable=self.show_ranges,
                            command=lambda: self.rerender(refit=True), **opts).pack(side="right")
-            tk.Checkbutton(bar, text="Names", variable=self.show_names,
+            tk.Checkbutton(self.sheet_opts, text="Names", variable=self.show_names,
                            command=lambda: self.rerender(refit=True), **opts).pack(side="right")
-            tk.Label(bar, text="Cols", fg=MUTED, bg=BG, font=(UI_FONT, 9)).pack(side="right", padx=(8, 2))
-            tk.Spinbox(bar, from_=1, to=5, width=2, textvariable=self.columns,
+            tk.Label(self.sheet_opts, text="Cols", fg=MUTED, bg=BG, font=(UI_FONT, 9)).pack(side="right", padx=(8, 2))
+            tk.Spinbox(self.sheet_opts, from_=1, to=5, width=2, textvariable=self.columns,
                        command=lambda: self.rerender(refit=True),
                        bg=CARD, fg=FG, buttonbackground=CARD, relief="flat", font=(UI_FONT, 9)).pack(side="right")
 
@@ -1338,6 +1341,7 @@ def run_gui(args):
             self.quiz_current = None
             self.quiz_done = False
             self.quiz_pool: list = []
+            self._sheet_geo = None
             self.lanes = {k: tk.BooleanVar(value=True)
                           for k in ("top", "jungle", "mid", "bot", "support")}
             self._build_quiz_ui()
@@ -1353,15 +1357,35 @@ def run_gui(args):
             if mode == "quiz":
                 self.quiz.place(x=0, y=0, relwidth=1, relheight=1)
                 self.quiz.lift()
+                self.sheet_opts.pack_forget()
                 self.tab_quiz.config(fg=FG, bg=CARD, font=(UI_FONT, 9, "bold"))
                 self.tab_sheet.config(fg=MUTED, bg=BG, font=(UI_FONT, 9))
+                # Remember the sheet's size, then shrink to what the quiz actually needs.
+                self._sheet_geo = (self.root.winfo_width(), self.root.winfo_height())
                 self.build_quiz_pool()
                 self.new_question()
+                self.root.after_idle(lambda: self.fit_window(force=True, content=self.quiz))
             else:
                 self.quiz.place_forget()
+                self.sheet_opts.pack(side="right")
                 self.tab_sheet.config(fg=FG, bg=CARD, font=(UI_FONT, 9, "bold"))
                 self.tab_quiz.config(fg=MUTED, bg=BG, font=(UI_FONT, 9))
-                self.fit_window(force=True)
+                self._restore_sheet_geo()
+
+        def _restore_sheet_geo(self):
+            """Put the window back to the size the sheet had before the quiz tab shrank it."""
+            if not self._sheet_geo:
+                return
+            w, h = self._sheet_geo
+            x, y = self.root.winfo_x(), self.root.winfo_y()
+            mon = monitor_bounds(self.root)
+            if mon:
+                mx, my, mw, mh = mon
+                w, h = min(w, mw), min(h, mh)
+                x = max(mx, min(x, mx + mw - w))
+                y = max(my, min(y, my + mh - h))
+            self._render_geo = (w, h)
+            self.root.geometry(f"{w}x{h}+{x}+{y}")
 
         # ---- quiz ---------------------------------------------------------------
         def _build_quiz_ui(self):
@@ -1399,8 +1423,9 @@ def run_gui(args):
 
             ask = tk.Frame(self.quiz, bg=BG)
             ask.pack(anchor="w", pady=(12, 4))
-            tk.Label(ask, text="Cooldown at rank 1 (seconds):", fg=MUTED, bg=BG,
-                     font=(UI_FONT, 9)).pack(side="left", padx=(0, 8))
+            self.quiz_ask = tk.Label(ask, text="Cooldown at rank 1 (seconds):", fg=MUTED, bg=BG,
+                                     font=(UI_FONT, 9))
+            self.quiz_ask.pack(side="left", padx=(0, 8))
             self.quiz_entry = tk.Entry(ask, width=7, bg=CARD, fg=FG, insertbackground=FG, relief="flat",
                                        font=(MONO_FONT, 11), justify="center")
             self.quiz_entry.pack(side="left")
@@ -1411,11 +1436,12 @@ def run_gui(args):
             self.quiz_button.pack(side="left", padx=(8, 0))
 
             self.quiz_result = tk.Label(self.quiz, text="", fg=MUTED, bg=BG, font=(UI_FONT, 10),
-                                        justify="left", wraplength=360)
+                                        justify="left", wraplength=360, height=2)
             self.quiz_result.pack(anchor="w", pady=(10, 0))
             self.quiz_next = tk.Button(self.quiz, text="Next champion", command=self.new_question, bg=CARD,
                                        fg=FG, activebackground=BORDER, activeforeground=FG, relief="flat",
-                                       font=(UI_FONT, 9), padx=10, cursor="hand2")
+                                       font=(UI_FONT, 9), padx=10, cursor="hand2", state="disabled")
+            self.quiz_next.pack(anchor="w", pady=(10, 0))
 
         def _retry_pool(self):
             if self.mode != "quiz":
@@ -1457,17 +1483,31 @@ def run_gui(args):
                 elif len(picked) < 5:
                     continue  # unknown role: only when every lane is allowed
                 for key, s in zip("QWER", c["spells"]):
-                    cds = [v for v in (s.get("cooldown") or []) if isinstance(v, (int, float)) and v > 0]
-                    if not cds:
+                    # Same cooldown text the sheet shows, so charge-based / placeholder spells match
+                    # (Rengar's Data Dragon cooldowns are all 0.25; CommunityDragon has the real ones).
+                    try:
+                        extras = dd.bin_spells(cid, fetch=False) or {}
+                    except Exception:
+                        extras = {}
+                    cd_text, recharge = ability_cds(s, extras.get(s["id"]))
+                    nums = re.findall(r"\d+(?:\.\d+)?", cd_text)
+                    unit = "at rank 1"
+                    if recharge:  # charge-based: the meaningful number is the time per charge
+                        nums = re.findall(r"\d+(?:\.\d+)?", recharge) or nums
+                        unit = "per charge"
+                    if not nums:
                         continue
+                    value = float(nums[0])
+                    if value <= 0 or value == 0.25:
+                        continue  # 0.25 is Data Dragon's "no cast cooldown" placeholder (Zoe W)
                     pool.append({"champ": c["name"], "champ_icon": f"img/champion/{c['image']['full']}",
-                                 "key": key, "name": s["name"], "cd": cds[0],
+                                 "key": key, "name": s["name"], "cd": value, "unit": unit,
                                  "icon": f"img/spell/{s['image']['full']}"})
             self.quiz_pool = pool
 
         def new_question(self):
             self.quiz_done = False
-            self.quiz_next.pack_forget()
+            self.quiz_next.configure(state="disabled")
             self.quiz_entry.delete(0, "end")
             self.quiz_entry.configure(state="normal")
             self.quiz_entry.focus_set()
@@ -1495,6 +1535,7 @@ def run_gui(args):
             threading.Thread(target=self._load_quiz_icons, args=(q,), daemon=True).start()
             self.quiz_champ_name.config(text=q["champ"])
             self.quiz_ability.config(text=f"{q['key']}  {q['name']}")
+            self.quiz_ask.config(text=f"Cooldown {q.get('unit', 'at rank 1')} (seconds):")
             self.quiz_result.config(text="Type the cooldown in seconds and press Enter.", fg=MUTED)
 
         def _load_quiz_icons(self, q):
@@ -1535,12 +1576,12 @@ def run_gui(args):
             verdict = "Perfect" if points == 100 else f"{signed:+g}s off"
             self.quiz_result.config(
                 text=f"{verdict} — +{points} points\n{self.quiz_current['champ']} {self.quiz_current['key']} "
-                     f"is {true:g}s at rank 1 (you said {guess:g}s).",
+                     f"is {true:g}s {self.quiz_current.get('unit', 'at rank 1')} (you said {guess:g}s).",
                 fg=MAX_FG if points == 100 else NOW_FG if points else KEY_COLORS["R"])
             self.quiz_score_label.config(text=f"Score {self.quiz_score}  ·  {self.quiz_count} answered")
             self.quiz_done = True
             self.quiz_entry.configure(state="disabled")
-            self.quiz_next.pack(anchor="w", pady=(10, 0))
+            self.quiz_next.configure(state="normal")
             return "break"
 
         # ---- background thread -------------------------------------------------
