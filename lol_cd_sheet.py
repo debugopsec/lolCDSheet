@@ -1556,6 +1556,7 @@ def run_gui(args):
             self.view = None
             self._render_key = None
             self._render_geo = None
+            self._card_refs = []
             self._note = None
             self._wheel_bound = False
 
@@ -2018,18 +2019,41 @@ def run_gui(args):
             return self.photo_cache[key]
 
         def render_key(self, cols: int):
-            """Everything visible in the body. A redraw is only needed when this changes, so the sheet no
-            longer gets torn down and rebuilt every time the watcher reports the same game again."""
+            """Structure of what is on screen (champions, cooldowns, ranges, toggles). Levels and the
+            per-level "now" values are deliberately NOT in here: they change constantly and are updated
+            in place instead of rebuilding the cards."""
             groups = tuple((title, tuple(
-                (e["champion"], e["position"], e["player"], e["error"], e.get("level"), str(e["icon"]),
-                 tuple((a["key"], a["name"], a["cd"], a["recharge"], a["range"], str(a["icon"]),
-                        a.get("rank"), a.get("now"))
+                (e["champion"], e["position"], e["player"], e["error"], str(e["icon"]),
+                 tuple((a["key"], a["name"], a["cd"], a["recharge"], a["range"], str(a["icon"]))
                        for a in e["abilities"]),
                  tuple((s["name"], s["cd"], str(s["icon"])) for s in e["summoners"]))
                 for e in entries))
                 for title, entries in (self.view or {}).get("groups", []))
             return (groups, self.view.get("mode"), self.view.get("version"), cols,
                     self.show_names.get(), self.show_ranges.get())
+
+        def now_text(self, entry, ability):
+            """Label text/colour for the 'now' cooldown, or blank when there is no level yet."""
+            if ability.get("now") is None or not entry.get("level"):
+                return "", NOW_FG
+            maxed = ability["rank"] >= ability["maxrank"]
+            return f"  now {ability['now']:g}s R{ability['rank']}", (MAX_FG if maxed else NOW_FG)
+
+        def _flat_entries(self):
+            return [e for _, entries in (self.view or {}).get("groups", []) for e in entries]
+
+        def _update_live_fields(self):
+            """Refresh only the level line and 'now' values, without touching the rest of the card."""
+            entries = self._flat_entries()
+            if len(entries) != len(self._card_refs):
+                return
+            for e, ref in zip(entries, self._card_refs):
+                sub = " · ".join(x for x in (e["position"], e["player"][:16],
+                                             f"Lv {e['level']}" if e.get("level") else "") if x)
+                ref["sub"].config(text=sub)
+                for label, a in zip(ref["now"], e["abilities"]):
+                    text, colour = self.now_text(e, a)
+                    label.config(text=text, fg=colour)
 
         def rerender(self, refit: bool = False):
             if not self.view:
@@ -2040,12 +2064,14 @@ def run_gui(args):
                 cols = 1
             key = self.render_key(cols)
             if key == self._render_key:
-                return  # same content on screen already: rebuilding it is what made the window flicker
+                self._update_live_fields()  # level / "now" changed only: no rebuild
+                return
             self._render_key = key
             # Hide the body while it is rebuilt, then show it again: one paint instead of dozens.
             self.canvas.itemconfigure(self._body_id, state="hidden")
             for w in self.body.winfo_children():
                 w.destroy()
+            self._card_refs = []
             self._note = None
             for title, entries in self.view["groups"]:
                 tk.Label(self.body, text=title.upper(), fg=MUTED, bg=BG,
@@ -2053,7 +2079,10 @@ def run_gui(args):
                 grid = tk.Frame(self.body, bg=BG)
                 grid.pack(anchor="w")
                 for i, e in enumerate(entries):
-                    self.card(grid, e).grid(row=i // cols, column=i % cols, sticky="nsew", padx=3, pady=3)
+                    card, ref = self.card(grid, e)
+                    card.grid(row=i // cols, column=i % cols, sticky="nsew", padx=3, pady=3)
+                    self._card_refs.append(ref)
+            self._update_live_fields()
             note = ("Base cooldowns before ability haste (Data Dragon; charge recharge times from CommunityDragon). "
                     "\"recharge ×N\" = time per charge, N max charges. \"now\" = the cooldown at that enemy's "
                     "current level (most popular leveling order), green once the ability is maxed.")
@@ -2117,8 +2146,8 @@ def run_gui(args):
             tk.Label(names, text=e["champion"], fg=FG, bg=CARD, font=(UI_FONT, 12, "bold")).pack(anchor="w")
             sub = " · ".join(x for x in (e["position"], e["player"][:16],
                                          f"Lv {e['level']}" if e.get("level") else "") if x)
-            if sub:
-                tk.Label(names, text=sub, fg=MUTED, bg=CARD, font=(UI_FONT, 8)).pack(anchor="w")
+            sub_label = tk.Label(names, text=sub, fg=MUTED, bg=CARD, font=(UI_FONT, 8))
+            sub_label.pack(anchor="w")
 
             summs = tk.Frame(head, bg=CARD)
             summs.pack(side="right")
@@ -2137,6 +2166,7 @@ def run_gui(args):
 
             rows = tk.Frame(card, bg=CARD)
             rows.pack(fill="x", pady=(3, 0))
+            now_labels = []
             for r, a in enumerate(e["abilities"]):
                 col = 0
                 aimg = self.photo(a["icon"], 5, 16)  # 64px -> 20px
@@ -2159,10 +2189,10 @@ def run_gui(args):
                     sep = " · " if a["cd"] != "—" else ""
                     tk.Label(cds, text=sep + a["recharge"], fg=RECHARGE_FG, bg=CARD,
                              font=(MONO_FONT, 10)).pack(side="left")
-                if a.get("now") is not None and e.get("level"):
-                    maxed = a["rank"] >= a["maxrank"]
-                    tk.Label(cds, text=f"  now {a['now']:g}s R{a['rank']}", fg=MAX_FG if maxed else NOW_FG,
-                             bg=CARD, font=(MONO_FONT, 10, "bold")).pack(side="left")
+                # Always created, so a later level-up can fill it in without rebuilding the card.
+                now_label = tk.Label(cds, text="", fg=NOW_FG, bg=CARD, font=(MONO_FONT, 10, "bold"))
+                now_label.pack(side="left")
+                now_labels.append(now_label)
                 col += 1
                 if self.show_ranges.get() and a["range"] != "—":
                     rng = tk.Frame(rows, bg=CARD)
@@ -2170,7 +2200,7 @@ def run_gui(args):
                     tk.Label(rng, text="↔", fg=MUTED, bg=CARD, font=(UI_FONT, 9)).pack(side="left")
                     tk.Label(rng, text=a["range"], fg=RANGE_FG, bg=CARD,
                              font=(MONO_FONT, 10)).pack(side="left", padx=(2, 0))
-            return card
+            return card, {"sub": sub_label, "now": now_labels}
 
     root = tk.Tk()
     App(root)
