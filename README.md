@@ -1,11 +1,30 @@
 # LoL Cooldown Sheet
 
 Shows every enemy's Q/W/E/R cooldowns and ranges, tracks their level, and has a cooldown-guessing game.
-Ability cooldowns update automatically with every patch.
+
+---
+
+> # ⚠️ READ THIS BEFORE TOUCHING THE REFRESHER
+>
+> **Ability cooldowns update by themselves after every patch. You never need the refresher for a patch.**
+>
+> Run `refresher/refresher.bat` **ONLY** when one of these three things happens:
+>
+> 1. **A range changed.** A number in the `↔` column looks wrong after a patch.
+> 2. **The leveling order changed.** The `now` cooldowns look wrong for a champion because players
+>    started maxing a different ability.
+> 3. **A new champion came out.**
+>
+> That's it. If none of those happened, **do not run it.** It takes 5–10 minutes, hits two websites, and
+> changes nothing useful.
+>
+> It does **not** touch cooldowns. Ever. Those come from Riot's Data Dragon and are already current.
+
+---
 
 ## Easiest way: no Python
 
-Download **`LoLCooldownSheet.exe`** from the [latest release](../../releases/latest) and run it.
+Download **`LoLCooldownSheet.exe`** from the [latest release](../../releases/latest) and double-click it.
 
 ## From this folder (needs Python)
 
@@ -14,23 +33,21 @@ Download **`LoLCooldownSheet.exe`** from the [latest release](../../releases/lat
 
 ## What's in here
 
-| Path | What it is |
-|---|---|
-| `run.bat` | Starts the sheet |
-| `lol_cd_sheet.py` | The whole program |
-| `refresher/` | `refresher.bat` — updates ranges, skill orders and roles after a patch or a new champion |
-| `tools/` | `build_exe.bat` — builds the standalone .exe with PyInstaller |
+| Path | What it is | Do you need it? |
+|---|---|---|
+| `run.bat` | Starts the sheet | **Yes, every time** |
+| `lol_cd_sheet.py` | The whole program | Don't edit by hand |
+| `refresher/` | Updates ranges, skill orders and roles | **Only for the 3 cases above** |
+| `tools/` | Builds the standalone .exe | Only if you want to rebuild the exe |
 
-## Refreshing after a patch
+## Running the refresher (only when needed)
 
-Double-click **`refresher/refresher.bat`** (or `python refresher/refresher.py`) when:
+Double-click **`refresher/refresher.bat`** (or `python refresher/refresher.py`).
 
-- a patch changes ability ranges,
-- the popular leveling order shifts,
-- **a new champion comes out** — it lists any champion it couldn't add.
+It rewrites the ranges, skill order and role tables inside `lol_cd_sheet.py`, scraped from the LoL wiki
+and u.gg. It prints any champion it couldn't add, and refuses to write if a site fails.
 
-It rewrites the ranges, skill order and role tables inside `lol_cd_sheet.py` from the LoL wiki and u.gg.
-It refuses to write if a site fails, and `--ranges-only` refreshes just the ranges.
+`--ranges-only` refreshes just the ranges, for when only case 1 happened.
 
-**Cooldowns are not refreshed by it.** They come from Riot's Data Dragon and update by themselves the first
-time you launch the app after a patch.
+**Again: it does not refresh cooldowns.** There is nothing to refresh — they're pulled from Riot's
+Data Dragon and update automatically the first time you launch the app after a patch.

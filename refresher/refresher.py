@@ -2,6 +2,13 @@
 """
 Refresher for the LoL Cooldown Sheet
 ====================================
+ONLY RUN THIS WHEN:
+  * a patch changed an ability range,
+  * the popular leveling order changed, or
+  * a new champion came out.
+
+A normal patch needs nothing from you: cooldowns update by themselves (Data Dragon).
+
 Updates the three static tables baked into lol_cd_sheet.py:
 
   * ability ranges        - scraped from the League of Legends wiki ability data templates
