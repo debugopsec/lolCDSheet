@@ -26,6 +26,12 @@ Shows every enemy's Q/W/E/R cooldowns and ranges, tracks their level, and has a 
 
 Download **`LoLCooldownSheet.exe`** from the [latest release](../../releases/latest) and double-click it.
 
+Windows will show a **SmartScreen warning** ("Windows protected your PC") the first time, because the exe
+is unsigned. Click **More info → Run anyway**.
+
+**Don't want that warning? Use the zip instead.** Running through Python never triggers SmartScreen — it
+just needs Python installed (below).
+
 ## From this folder (needs Python)
 
 1. Install Python 3 from https://www.python.org/downloads/ — tick **"Add python.exe to PATH"**.
