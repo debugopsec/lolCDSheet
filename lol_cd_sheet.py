@@ -4,13 +4,21 @@ LoL Cooldown Sheet
 ==================
 Waits for a League of Legends game to start, then shows every enemy champion's
 Q/W/E/R cooldowns and cast ranges (per rank) and their summoner spell cooldowns, so you
-know roughly when things are back up for trading / cooldown punishing.
+know roughly when things are back up for trading / cooldown punishing. During the game it
+tracks each enemy's level and shows the cooldown they are actually on right now, based on
+the most popular leveling order for that champion.
+
+The "CD Quiz" tab is a small training game: guess an ability's cooldown, earn 100 / 50 / 25
+points depending on how close you are, filtered by lane.
 
 This is a static reference sheet, NOT an active cooldown timer.
 
-Data sources (both official Riot):
+Data sources:
   * Live Client Data API  - https://127.0.0.1:2999  (served by the game client while you're in a match)
   * Data Dragon           - https://ddragon.leagueoflegends.com  (champion + summoner spell data, icons)
+  * CommunityDragon       - https://raw.communitydragon.org      (charge-based cooldowns)
+  * LoL Wiki              - ability cast ranges (see WIKI_RANGES below)
+  * u.gg                  - most popular skill order + primary role (see SKILL_PATH / CHAMP_ROLE)
 
 Usage:
   python lol_cd_sheet.py                      # GUI, waits for a game automatically
@@ -27,6 +35,7 @@ import base64
 import json
 import os
 import queue
+import random
 import re
 import ssl
 import sys
@@ -304,6 +313,248 @@ WIKI_RANGES = {
     'ZyraW': '850', 'trundledesecrate': '750',
 }
 POS_LABEL = {"TOP": "Top", "JUNGLE": "Jungle", "MIDDLE": "Mid", "BOTTOM": "Bot", "UTILITY": "Support"}
+
+# Most popular ability leveling order (18 levels, e.g. "WQEQEQQRQWQWRWWEE") and primary role, from u.gg.
+# Filled in below the range table; used to work out how many points an enemy has in each ability at their
+# current level, so the sheet can show the cooldown they are actually on right now.
+SKILL_PATH: dict[str, str] = {
+    'Aatrox': 'QEWQQRQEQEREEWWRWW',
+    'Ahri': 'WQEQQRQWQWRWWEEREE',
+    'Akali': 'QWEQQRQEQEREEWWRWW',
+    'Akshan': 'EQQWQRQEQEREEWWRWW',
+    'Alistar': 'WQEQQRQWQWRWWEEREE',
+    'Ambessa': 'QWEQQRQEQEREEWWRWW',
+    'Amumu': 'WEQEEREQEQRQQWWRWW',
+    'Anivia': 'QEEWEREQEQRQQWWRWW',
+    'Annie': 'QWEQQRQWQWRWWEEREE',
+    'Aphelios': 'WQQQQREQEQEREEEWWR',
+    'Ashe': 'WQEWWRWQWQRQQEEREE',
+    'Aurelion Sol': 'QEWQQRQWQWRWWEEREE',
+    'Aurora': 'QEWQQRQEQEREEWWRWW',
+    'Azir': 'WQEWWRWQWQRQQEEREE',
+    'Bard': 'QWEQQRQWQWRWWEEREE',
+    "Bel'Veth": 'QEWQQRQEQEEREWWWRW',
+    'Blitzcrank': 'QEWQQRQEQEREEWWRWW',
+    'Brand': 'WQEWWRWQWQRQQEEREE',
+    'Braum': 'QEWQQRQEQEREEWWRWW',
+    'Briar': 'WEQWWRWQWQRQQEEREE',
+    'Caitlyn': 'QWEQQRQWQWRWWEEREE',
+    'Camille': 'WEQQQRQEQEREEWWRWW',
+    'Cassiopeia': 'EQEWEREQEQRQQWWRWW',
+    "Cho'Gath": 'EQEWEREQEQRQQWWRWW',
+    'Corki': 'EQWQQRQEQEEREWWWRW',
+    'Darius': 'QWEQQRQEQEREEWWRWW',
+    'Diana': 'QEWQQRQWQWRWWEEREE',
+    'Dr. Mundo': 'QEWQQREEEERQQWWRWW',
+    'Draven': 'QWEQQRQWQWRWWEEREE',
+    'Ekko': 'QEWQQRQEQEREEWWRWW',
+    'Elise': 'WQEQQRQWQWRWWEEREE',
+    'Evelynn': 'QEQWQRQEQEREEWWRWW',
+    'Ezreal': 'QEWQQRQEQEREEWWRWW',
+    'Fiddlesticks': 'WEWQWRWQWQRQQEEREE',
+    'Fiora': 'QWEQQRQEQEREEWWRWW',
+    'Fizz': 'EWQEEREWEWRWWQQRQQ',
+    'Galio': 'QWEQQRQWQWRWWEEREE',
+    'Gangplank': 'EQQWQRQEQEREEWWRWW',
+    'Garen': 'EQWEEREQEQRQQWWRWW',
+    'Gnar': 'QEWQQRQWQWRWWEEREE',
+    'Gragas': 'EWQQQRQEQEREEWWRWW',
+    'Graves': 'EQQWQRQEQEREEWWRWW',
+    'Gwen': 'QEWQQRQEQEREEWWRWW',
+    'Hecarim': 'QWQEQRQWQWRWWEEREE',
+    'Heimerdinger': 'QEWQQRQWQWWRWEEERE',
+    'Hwei': 'EQWQQRQEQEREEWWRWW',
+    'Illaoi': 'WEQEEREQEQRQQWWRWW',
+    'Irelia': 'QEWQQRQWQWWRWEEERE',
+    'Ivern': 'QEWEEREQEQRQQWWRWW',
+    'Janna': 'WQEWWRWEWEREEQQRQQ',
+    'Jarvan IV': 'EQWQQRQEQEREEWWRWW',
+    'Jax': 'EQWWWRWEWEREEQQRQQ',
+    'Jayce': 'QEWQQWQWQWQWWEEEEE',
+    'Jhin': 'QWQEQRQWQWRWWEEREE',
+    'Jinx': 'QWEQQRQWQWRWWEEREE',
+    "K'Sante": 'EQWQQRQEQEREEWWRWW',
+    "Kai'Sa": 'QWEQQRQEQEREEWWRWW',
+    'Kalista': 'EQWEEREQEQRQQWWRWW',
+    'Karma': 'QEWQQRQEQEREEWWRWW',
+    'Karthus': 'QEQWQRQEQEREEWWRWW',
+    'Kassadin': 'QWEQQRQEQEREEWWRWW',
+    'Katarina': 'QEWQQRQEQEREEWWRWW',
+    'Kayle': 'EQWQQRQEQEREEWWRWW',
+    'Kayn': 'QEWQQRQWQWRWWEEREE',
+    'Kennen': 'EWQQQRQWQWRWWEEREE',
+    "Kha'Zix": 'QWEQQRQWQWWRWEEERE',
+    'Kindred': 'WQEQQRQWQWRWWEEREE',
+    'Kled': 'QWEQQRQWQWRWWEEREE',
+    "Kog'Maw": 'WQEWWRWQWQRQQEEREE',
+    'LeBlanc': 'WQEWWRWQWQRQQEEREE',
+    'Lee Sin': 'EQWQQRQWQWRWWEEREE',
+    'Leona': 'QEWWWRWEWEREEQQRQQ',
+    'Lillia': 'QWEQQRQWQWRWWEEREE',
+    'Lissandra': 'QWEQQRQWQWRWWEEREE',
+    'Locke': 'QEWQQRQWQWRWWEEREE',
+    'Lucian': 'QEWQQRQEQEREEWWRWW',
+    'Lulu': 'QEWEEREWEWRWWQQRQQ',
+    'Lux': 'EQWEEREQEQRQQWWRWW',
+    'Malphite': 'QWEQQRQEQEREEWWRWW',
+    'Malzahar': 'EWQEEREQEQRQQWWRWW',
+    'Maokai': 'WQEQQRQWQWRWWEEREE',
+    'Master Yi': 'QEWQQRQEQEREEWWRWW',
+    'Mel': 'QEWQQRQEQEREEWWRWW',
+    'Milio': 'EWQEEREWEWRWWQQRQQ',
+    'Miss Fortune': 'QWEQQRQWQWRWWEEREE',
+    'Mordekaiser': 'QEWQQRQEQEREEWWRWW',
+    'Morgana': 'QWEQQRQWQWRWWEEREE',
+    'Naafiri': 'QEWQQRQEQEREEWWRWW',
+    'Nami': 'WEQWWRWEWEREEQQRQQ',
+    'Nasus': 'QEWQQRQWQWRWWEEREE',
+    'Nautilus': 'QWEQQRQWQWRWWEEREE',
+    'Neeko': 'QEWQQRQEQEREEWWRWW',
+    'Nidalee': 'EQWQQRQEQEREEWWRWW',
+    'Nilah': 'QEWEEREQEQRQQWWRWW',
+    'Nocturne': 'QWQEQRQEQEREEWWRWW',
+    'Olaf': 'QEWQQRQEQEREEWWRWW',
+    'Orianna': 'QWWEQRQQQWRWWEEREE',
+    'Ornn': 'QWEWWRWEWEREEQQRQQ',
+    'Pantheon': 'WQEQQRQWQWRWWEEREE',
+    'Poppy': 'EQWQQRQEQEREEWWRWW',
+    'Pyke': 'QEWQQRQEQEREEWWRWW',
+    'Qiyana': 'QWQEQRQWQWWRWEEERE',
+    'Quinn': 'EQWWWRWQWQRQQEEREE',
+    'Rakan': 'WQEWWRWEWEREEQQRQQ',
+    'Rammus': 'WQEQQRQEQEREEWWRWW',
+    "Rek'Sai": 'QWEQQRQEQEREEWWRWW',
+    'Rell': 'WQEWWRWEWEREEQQRQQ',
+    'Renekton': 'QWEQQRQEQEREEWWRWW',
+    'Rengar': 'QWEQQRQEQEREEWWRWW',
+    'Riven': 'QWEQQRQEQEREEWWRWW',
+    'Rumble': 'EQWQQRQEQEREEWWRWW',
+    'Ryze': 'EQWQQRQEQEREEWWRWW',
+    'Samira': 'QEWQQRQEQEREEWWRWW',
+    'Sejuani': 'EWQWWRWQWQRQQEEREE',
+    'Senna': 'QWEQQRQWQWRWWEEREE',
+    'Seraphine': 'QEWQQRQWQWRWWEEREE',
+    'Sett': 'WEQQQRQWQWRWWEEREE',
+    'Shaco': 'WQEWWRWEWEREEQQRQQ',
+    'Shen': 'QEWQQRQEQEREEWWRWW',
+    'Shyvana': 'QEWQQRQWQWRWWEEREE',
+    'Singed': 'QEQWQRQEQEREEWWRWW',
+    'Sion': 'WQEQQRQWQWRWWEEREE',
+    'Sivir': 'WQEQQRQWQWWRWEEERE',
+    'Skarner': 'QWEQQRQWQWRWWEEREE',
+    'Smolder': 'QWEQQRQWQWRWWEEREE',
+    'Sona': 'QWEQQRWWWWRQQEEREE',
+    'Soraka': 'QWEWWRWQWQRQQEEREE',
+    'Swain': 'EWQQQRQWQWRWWEEREE',
+    'Sylas': 'EWQWWRWEWEREEQQRQQ',
+    'Syndra': 'QEWQQRQWQWRWWEEREE',
+    'Tahm Kench': 'QWEQQRQWQWRWWEEREE',
+    'Taliyah': 'QEWQQRQEQEREEWWRWW',
+    'Talon': 'WQEWWRWQWQRQQEEREE',
+    'Taric': 'EQWQEREEEQRQQWWRWW',
+    'Teemo': 'EQWEEREQEQRQQWWRWW',
+    'Thresh': 'QEWQQRQEQEREEWWRWW',
+    'Tristana': 'EWQEEREQEQQRQWWWRW',
+    'Trundle': 'QWEQQRQWQWRWWEEREE',
+    'Tryndamere': 'EQQWQRQEQEEEWWWWRR',
+    'Twisted Fate': 'WEQQQRQWQWRWWEEREE',
+    'Twitch': 'QEWEEREQEQRQQWWRWW',
+    'Udyr': 'QRWEQQQEQEQEEEWWWW',
+    'Urgot': 'EWQQWRWWWQRQQEEREE',
+    'Varus': 'EWQQQRQWQWRWWEEREE',
+    'Vayne': 'QWEQQRQWQWRWWEEREE',
+    'Veigar': 'QWEQQRQWQWRWWEEREE',
+    "Vel'Koz": 'QEWQQRQWQWRWWEEREE',
+    'Vex': 'EQWQQRQWQWRWWEEREE',
+    'Vi': 'WEQQQRQEQEREEWWRWW',
+    'Viego': 'QWQEQRQEQEREEWWRWW',
+    'Viktor': 'QEEWEREQEQRQQWWRWW',
+    'Vladimir': 'QWEQQRQEQEREEWWRWW',
+    'Volibear': 'EQWWWRWQWQRQQEEREE',
+    'Warwick': 'QWEWWRWQWQRQQEEREE',
+    'Wukong': 'EQWQQRQEQEREEWWRWW',
+    'Xayah': 'QEWEEREWEWRWWQQRQQ',
+    'Xerath': 'QWEQQRQWQWRWWEEREE',
+    'Xin Zhao': 'EWQWWRWEWEREEQQRQQ',
+    'Yasuo': 'QEWQQRQEQEREEWWRWW',
+    'Yone': 'QWEQQRQEQEREEWWRWW',
+    'Yorick': 'QEWQQRQEQEREEWWRWW',
+    'Yunara': 'QWEQQRQWQWRWWEEREE',
+    'Yuumi': 'QEQEQRQEQERQEWWRWW',
+    'Zaahen': 'QEWQQRQEQEREEWWRWW',
+    'Zac': 'WQEEEREWEWRWWQQRQQ',
+    'Zed': 'QWEQQRQEQEEREWWWRW',
+    'Zeri': 'QEWQQRQEQEREEWWRWW',
+    'Ziggs': 'QEWQQRQEQEREEWWRWW',
+    'Zilean': 'QWEQQRQEQEREEWWRWW',
+    'Zoe': 'QEWQQRQEQEREEWWRWW',
+    'Zyra': 'EWQEEREQEQRQQWWRWW',
+}
+CHAMP_ROLE: dict[str, str] = {
+    'Aatrox': 'top', 'Ahri': 'mid', 'Akali': 'mid', 'Akshan': 'mid',
+    'Alistar': 'support', 'Ambessa': 'top', 'Amumu': 'jungle', 'Anivia': 'mid',
+    'Annie': 'mid', 'Aphelios': 'bot', 'Ashe': 'bot', 'Aurelion Sol': 'mid',
+    'Aurora': 'mid', 'Azir': 'mid', 'Bard': 'support', "Bel'Veth": 'jungle',
+    'Blitzcrank': 'support', 'Brand': 'support', 'Braum': 'support', 'Briar': 'jungle',
+    'Caitlyn': 'bot', 'Camille': 'top', 'Cassiopeia': 'mid', "Cho'Gath": 'jungle',
+    'Corki': 'bot', 'Darius': 'top', 'Diana': 'mid', 'Dr. Mundo': 'top',
+    'Draven': 'bot', 'Ekko': 'mid', 'Elise': 'jungle', 'Evelynn': 'jungle',
+    'Ezreal': 'bot', 'Fiddlesticks': 'jungle', 'Fiora': 'top', 'Fizz': 'mid',
+    'Galio': 'mid', 'Gangplank': 'top', 'Garen': 'top', 'Gnar': 'top',
+    'Gragas': 'top', 'Graves': 'jungle', 'Gwen': 'top', 'Hecarim': 'jungle',
+    'Heimerdinger': 'top', 'Hwei': 'mid', 'Illaoi': 'top', 'Irelia': 'top',
+    'Ivern': 'jungle', 'Janna': 'support', 'Jarvan IV': 'jungle', 'Jax': 'top',
+    'Jayce': 'top', 'Jhin': 'bot', 'Jinx': 'bot', "K'Sante": 'top',
+    "Kai'Sa": 'bot', 'Kalista': 'bot', 'Karma': 'support', 'Karthus': 'jungle',
+    'Kassadin': 'mid', 'Katarina': 'mid', 'Kayle': 'top', 'Kayn': 'jungle',
+    'Kennen': 'top', "Kha'Zix": 'jungle', 'Kindred': 'jungle', 'Kled': 'top',
+    "Kog'Maw": 'bot', 'LeBlanc': 'mid', 'Lee Sin': 'jungle', 'Leona': 'support',
+    'Lillia': 'jungle', 'Lissandra': 'mid', 'Locke': 'mid', 'Lucian': 'bot',
+    'Lulu': 'support', 'Lux': 'support', 'Malphite': 'top', 'Malzahar': 'mid',
+    'Maokai': 'support', 'Master Yi': 'jungle', 'Mel': 'mid', 'Milio': 'support',
+    'Miss Fortune': 'bot', 'Mordekaiser': 'top', 'Morgana': 'support', 'Naafiri': 'jungle',
+    'Nami': 'support', 'Nasus': 'top', 'Nautilus': 'support', 'Neeko': 'support',
+    'Nidalee': 'jungle', 'Nilah': 'bot', 'Nocturne': 'jungle', 'Olaf': 'top',
+    'Orianna': 'mid', 'Ornn': 'top', 'Pantheon': 'support', 'Poppy': 'support',
+    'Pyke': 'support', 'Qiyana': 'jungle', 'Quinn': 'top', 'Rakan': 'support',
+    'Rammus': 'jungle', "Rek'Sai": 'jungle', 'Rell': 'support', 'Renekton': 'top',
+    'Rengar': 'jungle', 'Riven': 'top', 'Rumble': 'top', 'Ryze': 'mid',
+    'Samira': 'bot', 'Sejuani': 'jungle', 'Senna': 'support', 'Seraphine': 'support',
+    'Sett': 'top', 'Shaco': 'jungle', 'Shen': 'top', 'Shyvana': 'jungle',
+    'Singed': 'top', 'Sion': 'top', 'Sivir': 'bot', 'Skarner': 'jungle',
+    'Smolder': 'bot', 'Sona': 'support', 'Soraka': 'support', 'Swain': 'support',
+    'Sylas': 'mid', 'Syndra': 'mid', 'Tahm Kench': 'support', 'Taliyah': 'jungle',
+    'Talon': 'jungle', 'Taric': 'support', 'Teemo': 'top', 'Thresh': 'support',
+    'Tristana': 'bot', 'Trundle': 'top', 'Tryndamere': 'top', 'Twisted Fate': 'mid',
+    'Twitch': 'bot', 'Udyr': 'jungle', 'Urgot': 'top', 'Varus': 'bot',
+    'Vayne': 'bot', 'Veigar': 'mid', "Vel'Koz": 'support', 'Vex': 'mid',
+    'Vi': 'jungle', 'Viego': 'jungle', 'Viktor': 'mid', 'Vladimir': 'mid',
+    'Volibear': 'top', 'Warwick': 'jungle', 'Wukong': 'jungle', 'Xayah': 'bot',
+    'Xerath': 'mid', 'Xin Zhao': 'jungle', 'Yasuo': 'mid', 'Yone': 'mid',
+    'Yorick': 'top', 'Yunara': 'bot', 'Yuumi': 'support', 'Zaahen': 'top',
+    'Zac': 'jungle', 'Zed': 'mid', 'Zeri': 'bot', 'Ziggs': 'bot',
+    'Zilean': 'support', 'Zoe': 'mid', 'Zyra': 'support',
+}
+
+
+def skill_rank(champion: str, key: str, level: int | None) -> int:
+    """Points in `key` at `level`, following the popular leveling order (falls back to R at 6/11/16)."""
+    if not level or level < 1:
+        return 1
+    level = min(level, 18)
+    path = SKILL_PATH.get(champion)
+    if path and len(path) == 18:
+        return max(1, path[:level].count(key))
+    order = []
+    for lv in range(1, 19):
+        if lv in (6, 11, 16) and order.count("R") < 3:
+            order.append("R")
+            continue
+        for k in "QWE":
+            if order.count(k) < 5:
+                order.append(k)
+                break
+    return max(1, order[:level].count(key))
 
 # The game client serves the live API with a self-signed Riot cert on localhost.
 _LOCAL_SSL = ssl.create_default_context()
@@ -778,7 +1029,7 @@ def player_id(p: dict) -> str:
 def game_signature(data: dict):
     def spells(p):
         return tuple((s or {}).get("displayName", "") for s in (p.get("summonerSpells") or {}).values())
-    return tuple(sorted((p.get("team", ""), p.get("championName", ""), player_id(p), spells(p))
+    return tuple(sorted((p.get("team", ""), p.get("championName", ""), player_id(p), spells(p), p.get("level"))
                         for p in data["allPlayers"]))
 
 
@@ -839,6 +1090,7 @@ def build_entry(dd: DataDragon, p: dict, want_icons: bool, quick: bool = False) 
         "champion": p.get("championName", "?"),
         "position": POS_LABEL.get(p.get("position", ""), ""),
         "player": (p.get("riotIdGameName") or ("" if p.get("fromClient") else player_id(p))).split("#")[0],
+        "level": p.get("level"),
         "icon": None,
         "abilities": [],
         "summoners": [],
@@ -861,11 +1113,19 @@ def build_entry(dd: DataDragon, p: dict, want_icons: bool, quick: bool = False) 
             extras = extras or {}
             for key, s in zip("QWER", c["spells"]):
                 cd, recharge = ability_cds(s, extras.get(s["id"]))
+                rank = skill_rank(c["name"], key, entry["level"])
+                raw = [v for v in (s.get("cooldown") or []) if isinstance(v, (int, float))]
+                now = raw[min(rank, len(raw)) - 1] if raw else None
+                if not now:  # Data Dragon says 0 for a few (Veigar W); the bin value is used above
+                    now = None
                 entry["abilities"].append({
                     "key": key,
                     "name": s["name"],
                     "cd": cd,
                     "recharge": recharge,
+                    "rank": rank,
+                    "maxrank": s.get("maxrank") or 5,
+                    "now": now,
                     "range": WIKI_RANGES.get(s["id"]) or RANGE_OVERRIDES.get(s["id"]) or fmt_range(s.get("range")),
                     "icon": f"img/spell/{s['image']['full']}" if want_icons else None,
                 })
@@ -917,10 +1177,11 @@ def demo_game(champs: list[str]) -> dict:
         return {"summonerSpellOne": {"displayName": a}, "summonerSpellTwo": {"displayName": b}}
 
     players = [{"championName": "Garen", "riotId": "You#DEMO", "team": "ORDER", "position": "TOP",
-                "summonerSpells": spells("Flash", "Teleport")}]
+                "level": 11, "summonerSpells": spells("Flash", "Teleport")}]
     for i, c in enumerate(champs):
         players.append({"championName": c, "riotId": f"Enemy{i + 1}#DEMO", "team": "CHAOS",
-                        "position": positions[i % 5], "summonerSpells": spells("Flash", second[i % 5])})
+                        "position": positions[i % 5], "level": 11,
+                        "summonerSpells": spells("Flash", second[i % 5])})
     return {"activePlayer": {"riotId": "You#DEMO"}, "allPlayers": players, "gameData": {"gameMode": "DEMO"}}
 
 
@@ -979,6 +1240,7 @@ DEFAULT_DEMO = ["Darius", "Lee Sin", "Ahri", "Jinx", "Thresh"]
 
 BG, CARD, BORDER = "#0e141b", "#18222d", "#2a3a4a"
 FG, MUTED, CD_FG, RECHARGE_FG, RANGE_FG = "#e6e1d6", "#8a96a3", "#f2c66d", "#e0a35a", "#7cc7c0"
+NOW_FG, MAX_FG = "#ffd166", "#7ee787"
 KEY_COLORS = {"Q": "#5fb3ff", "W": "#6fdc8c", "E": "#c792ea", "R": "#ff6b6b"}
 UI_FONT, MONO_FONT = "Segoe UI", "Consolas"
 
@@ -1024,6 +1286,16 @@ def run_gui(args):
 
             bar = tk.Frame(root, bg=BG, padx=8, pady=6)
             bar.pack(fill="x")
+            # Tabs: the enemy sheet, and a cooldown guessing game.
+            self.mode = "sheet"
+            self.tab_sheet = tk.Label(bar, text="Sheet", fg=FG, bg=CARD, padx=9, pady=1,
+                                      font=(UI_FONT, 9, "bold"), cursor="hand2")
+            self.tab_quiz = tk.Label(bar, text="CD Quiz", fg=MUTED, bg=BG, padx=9, pady=1,
+                                     font=(UI_FONT, 9), cursor="hand2")
+            self.tab_sheet.pack(side="left", padx=(0, 4))
+            self.tab_quiz.pack(side="left", padx=(0, 10))
+            self.tab_sheet.bind("<Button-1>", lambda _e: self.show_mode("sheet"))
+            self.tab_quiz.bind("<Button-1>", lambda _e: self.show_mode("quiz"))
             self.status = tk.Label(bar, text="Loading Data Dragon…", fg=MUTED, bg=BG, font=(UI_FONT, 9), anchor="w")
             self.status.pack(side="left", fill="x", expand=True)
             opts = dict(bg=BG, fg=MUTED, selectcolor=CARD, activebackground=BG, activeforeground=FG,
@@ -1059,8 +1331,217 @@ def run_gui(args):
                                      "loaded into the game.", fg=MUTED, bg=BG, font=(UI_FONT, 10),
                      justify="left").pack(anchor="w", pady=20)
 
+            # ---- CD quiz tab ----------------------------------------------------
+            self.quiz = tk.Frame(wrap, bg=BG, padx=12, pady=10)
+            self.quiz_score = 0
+            self.quiz_count = 0
+            self.quiz_current = None
+            self.quiz_done = False
+            self.quiz_pool: list = []
+            self.lanes = {k: tk.BooleanVar(value=True)
+                          for k in ("top", "jungle", "mid", "bot", "support")}
+            self._build_quiz_ui()
+
             threading.Thread(target=self.worker, daemon=True).start()
             root.after(150, self.drain)
+
+        # ---- tabs ---------------------------------------------------------------
+        def show_mode(self, mode: str):
+            if mode == self.mode:
+                return
+            self.mode = mode
+            if mode == "quiz":
+                self.quiz.place(x=0, y=0, relwidth=1, relheight=1)
+                self.quiz.lift()
+                self.tab_quiz.config(fg=FG, bg=CARD, font=(UI_FONT, 9, "bold"))
+                self.tab_sheet.config(fg=MUTED, bg=BG, font=(UI_FONT, 9))
+                self.build_quiz_pool()
+                self.new_question()
+            else:
+                self.quiz.place_forget()
+                self.tab_sheet.config(fg=FG, bg=CARD, font=(UI_FONT, 9, "bold"))
+                self.tab_quiz.config(fg=MUTED, bg=BG, font=(UI_FONT, 9))
+                self.fit_window(force=True)
+
+        # ---- quiz ---------------------------------------------------------------
+        def _build_quiz_ui(self):
+            tk.Label(self.quiz, text="Guess the cooldown", fg=FG, bg=BG,
+                     font=(UI_FONT, 13, "bold")).pack(anchor="w")
+            self.quiz_score_label = tk.Label(self.quiz, text="Score 0  ·  0 answered", fg=MUTED, bg=BG,
+                                             font=(UI_FONT, 9))
+            self.quiz_score_label.pack(anchor="w", pady=(2, 8))
+
+            lanes = tk.Frame(self.quiz, bg=BG)
+            lanes.pack(anchor="w", pady=(0, 10))
+            tk.Label(lanes, text="Lanes:", fg=MUTED, bg=BG, font=(UI_FONT, 9)).pack(side="left", padx=(0, 6))
+            opts = dict(bg=BG, fg=MUTED, selectcolor=CARD, activebackground=BG, activeforeground=FG,
+                        font=(UI_FONT, 9), highlightthickness=0, bd=0)
+            for key, label in (("top", "Top"), ("jungle", "Jungle"), ("mid", "Mid"), ("bot", "Bot"),
+                               ("support", "Support")):
+                tk.Checkbutton(lanes, text=label, variable=self.lanes[key],
+                               command=self._lanes_changed, **opts).pack(side="left")
+
+            self.quiz_card = tk.Frame(self.quiz, bg=CARD, padx=12, pady=10,
+                                      highlightthickness=1, highlightbackground=BORDER)
+            self.quiz_card.pack(anchor="w", fill="x")
+            head = tk.Frame(self.quiz_card, bg=CARD)
+            head.pack(anchor="w")
+            self.quiz_champ_img = tk.Label(head, bg=CARD)
+            self.quiz_champ_img.pack(side="left")
+            self.quiz_champ_name = tk.Label(head, text="", fg=FG, bg=CARD, font=(UI_FONT, 13, "bold"))
+            self.quiz_champ_name.pack(side="left", padx=(8, 0))
+            row = tk.Frame(self.quiz_card, bg=CARD)
+            row.pack(anchor="w", pady=(8, 0))
+            self.quiz_ability_img = tk.Label(row, bg=CARD)
+            self.quiz_ability_img.pack(side="left")
+            self.quiz_ability = tk.Label(row, text="", fg=FG, bg=CARD, font=(UI_FONT, 11))
+            self.quiz_ability.pack(side="left", padx=(8, 0))
+
+            ask = tk.Frame(self.quiz, bg=BG)
+            ask.pack(anchor="w", pady=(12, 4))
+            tk.Label(ask, text="Cooldown at rank 1 (seconds):", fg=MUTED, bg=BG,
+                     font=(UI_FONT, 9)).pack(side="left", padx=(0, 8))
+            self.quiz_entry = tk.Entry(ask, width=7, bg=CARD, fg=FG, insertbackground=FG, relief="flat",
+                                       font=(MONO_FONT, 11), justify="center")
+            self.quiz_entry.pack(side="left")
+            self.quiz_entry.bind("<Return>", self.check_answer)
+            self.quiz_button = tk.Button(ask, text="Check", command=self.check_answer, bg=CARD, fg=FG,
+                                         activebackground=BORDER, activeforeground=FG, relief="flat",
+                                         font=(UI_FONT, 9, "bold"), padx=10, cursor="hand2")
+            self.quiz_button.pack(side="left", padx=(8, 0))
+
+            self.quiz_result = tk.Label(self.quiz, text="", fg=MUTED, bg=BG, font=(UI_FONT, 10),
+                                        justify="left", wraplength=360)
+            self.quiz_result.pack(anchor="w", pady=(10, 0))
+            self.quiz_next = tk.Button(self.quiz, text="Next champion", command=self.new_question, bg=CARD,
+                                       fg=FG, activebackground=BORDER, activeforeground=FG, relief="flat",
+                                       font=(UI_FONT, 9), padx=10, cursor="hand2")
+
+        def _retry_pool(self):
+            if self.mode != "quiz":
+                return
+            self.build_quiz_pool()
+            if self.quiz_pool and not self.quiz_current:
+                self.new_question()
+
+        def _lanes_changed(self):
+            self.build_quiz_pool()
+            self.new_question()
+
+        def build_quiz_pool(self):
+            dd = getattr(self, "dd", None)
+            if dd is None:
+                self.quiz_pool = []
+                return
+            lanes_key = tuple(k for k, v in self.lanes.items() if v.get())
+            if lanes_key == getattr(self, "_pool_key", None) and self.quiz_pool:
+                return  # same lane filter as last time
+            self._pool_key = lanes_key
+            if dd._full_cache is None and dd.cached("data/en_US/championFull.json") is None:
+                # Champion data still downloading on first launch: don't block the UI on it.
+                self.quiz_pool = []
+                if self.mode == "quiz":
+                    self.root.after(2000, self._retry_pool)
+                return
+            picked = {k for k, v in self.lanes.items() if v.get()}
+            pool = []
+            for cid in dd.champ_ids:
+                try:
+                    c = dd.champion(cid)
+                except Exception:
+                    continue
+                role = CHAMP_ROLE.get(c["name"], "").lower()
+                if role:
+                    if role not in picked:
+                        continue
+                elif len(picked) < 5:
+                    continue  # unknown role: only when every lane is allowed
+                for key, s in zip("QWER", c["spells"]):
+                    cds = [v for v in (s.get("cooldown") or []) if isinstance(v, (int, float)) and v > 0]
+                    if not cds:
+                        continue
+                    pool.append({"champ": c["name"], "champ_icon": f"img/champion/{c['image']['full']}",
+                                 "key": key, "name": s["name"], "cd": cds[0],
+                                 "icon": f"img/spell/{s['image']['full']}"})
+            self.quiz_pool = pool
+
+        def new_question(self):
+            self.quiz_done = False
+            self.quiz_next.pack_forget()
+            self.quiz_entry.delete(0, "end")
+            self.quiz_entry.configure(state="normal")
+            self.quiz_entry.focus_set()
+            if not self.quiz_pool:
+                self.quiz_current = None
+                self.quiz_champ_img.config(image="")
+                self.quiz_ability_img.config(image="")
+                self.quiz_champ_name.config(text="No champions for those lanes")
+                self.quiz_ability.config(text="")
+                self.quiz_result.config(text="Tick another lane to get questions from it.", fg=MUTED)
+                self.quiz_entry.configure(state="disabled")
+                self.quiz_button.configure(state="disabled")
+                return
+            self.quiz_entry.configure(state="normal")
+            self.quiz_button.configure(state="normal")
+            q = random.choice(self.quiz_pool)
+            for _ in range(6):
+                if q != self.quiz_current or len(self.quiz_pool) == 1:
+                    break
+                q = random.choice(self.quiz_pool)
+            self.quiz_current = q
+            # Icons may still need downloading; do that off the UI thread so the next question is instant.
+            self.quiz_champ_img.config(image="")
+            self.quiz_ability_img.config(image="")
+            threading.Thread(target=self._load_quiz_icons, args=(q,), daemon=True).start()
+            self.quiz_champ_name.config(text=q["champ"])
+            self.quiz_ability.config(text=f"{q['key']}  {q['name']}")
+            self.quiz_result.config(text="Type the cooldown in seconds and press Enter.", fg=MUTED)
+
+        def _load_quiz_icons(self, q):
+            dd = getattr(self, "dd", None)
+            champ_path = spell_path = None
+            if dd:
+                champ_path = dd.fetch_optional(q["champ_icon"]) or None
+                spell_path = dd.fetch_optional(q["icon"]) or None
+            self.root.after(0, lambda: self._apply_quiz_icons(q, champ_path, spell_path))
+
+        def _apply_quiz_icons(self, q, champ_path, spell_path):
+            if q is not self.quiz_current:
+                return  # moved on already
+            img = self.photo(champ_path, 1, 5)  # 120px -> 24px
+            self.quiz_champ_img.config(image=img or "")
+            self.quiz_champ_img.image = img
+            aimg = self.photo(spell_path, 5, 16)  # 64px -> 20px
+            self.quiz_ability_img.config(image=aimg or "")
+            self.quiz_ability_img.image = aimg
+
+        def check_answer(self, _event=None):
+            if self.quiz_done:
+                self.new_question()
+                return "break"
+            if not self.quiz_current:
+                return "break"
+            try:
+                guess = float(self.quiz_entry.get().replace(",", "."))
+            except ValueError:
+                self.quiz_result.config(text="Type a number, e.g. 7 or 6.5", fg=MUTED)
+                return "break"
+            true = self.quiz_current["cd"]
+            diff = abs(guess - true)
+            signed = guess - true
+            points = 100 if diff < 0.01 else 50 if diff <= 2 else 25 if diff <= 4 else 0
+            self.quiz_score += points
+            self.quiz_count += 1
+            verdict = "Perfect" if points == 100 else f"{signed:+g}s off"
+            self.quiz_result.config(
+                text=f"{verdict} — +{points} points\n{self.quiz_current['champ']} {self.quiz_current['key']} "
+                     f"is {true:g}s at rank 1 (you said {guess:g}s).",
+                fg=MAX_FG if points == 100 else NOW_FG if points else KEY_COLORS["R"])
+            self.quiz_score_label.config(text=f"Score {self.quiz_score}  ·  {self.quiz_count} answered")
+            self.quiz_done = True
+            self.quiz_entry.configure(state="disabled")
+            self.quiz_next.pack(anchor="w", pady=(10, 0))
+            return "break"
 
         # ---- background thread -------------------------------------------------
         def worker(self):
@@ -1075,6 +1556,7 @@ def run_gui(args):
             except Exception as e:
                 status(f"Couldn't load Data Dragon (internet?): {e}")
                 return
+            self.q.put(("dd", dd))
 
             if args.demo is not None:
                 self.q.put(("view", build_view(dd, demo_game(args.demo or DEFAULT_DEMO))))
@@ -1117,6 +1599,8 @@ def run_gui(args):
                     kind, payload = self.q.get_nowait()
                     if kind == "status":
                         self.status.config(text=payload)
+                    elif kind == "dd":
+                        self.dd = payload
                     elif kind == "view":
                         self.view = payload
                         self.rerender()
@@ -1196,8 +1680,9 @@ def run_gui(args):
             """Everything visible in the body. A redraw is only needed when this changes, so the sheet no
             longer gets torn down and rebuilt every time the watcher reports the same game again."""
             groups = tuple((title, tuple(
-                (e["champion"], e["position"], e["player"], e["error"], str(e["icon"]),
-                 tuple((a["key"], a["name"], a["cd"], a["recharge"], a["range"], str(a["icon"]))
+                (e["champion"], e["position"], e["player"], e["error"], e.get("level"), str(e["icon"]),
+                 tuple((a["key"], a["name"], a["cd"], a["recharge"], a["range"], str(a["icon"]),
+                        a.get("rank"), a.get("now"))
                        for a in e["abilities"]),
                  tuple((s["name"], s["cd"], str(s["icon"])) for s in e["summoners"]))
                 for e in entries))
@@ -1229,7 +1714,8 @@ def run_gui(args):
                 for i, e in enumerate(entries):
                     self.card(grid, e).grid(row=i // cols, column=i % cols, sticky="nsew", padx=3, pady=3)
             note = ("Base cooldowns before ability haste (Data Dragon; charge recharge times from CommunityDragon). "
-                    "\"recharge ×N\" = time per charge, N max charges.")
+                    "\"recharge ×N\" = time per charge, N max charges. \"now\" = the cooldown at that enemy's "
+                    "current level (most popular leveling order), green once the ability is maxed.")
             if self.show_ranges.get():
                 note += (" Ranges from the League of Legends wiki, in game units: \"AoE N\" = radius around them, "
                          "\"AA\" = empowered basic attack, \"A–B\" = grows while charging / with level, "
@@ -1243,10 +1729,11 @@ def run_gui(args):
             self.canvas.configure(scrollregion=self.canvas.bbox("all"))
             self.canvas.yview_moveto(0)
 
-        def fit_window(self, force: bool = False):
+        def fit_window(self, force: bool = False, content=None):
             """Size the window to the sheet, capped to the monitor (the rest scrolls). Never moves the
             window: the top-left corner stays exactly where the user put it. Normal updates only grow
             the window when the sheet needs more room; it never shrinks itself."""
+            content = content or self.body
             self.root.update_idletasks()
             x, y = self.root.winfo_x(), self.root.winfo_y()
             mon = monitor_bounds(self.root)
@@ -1255,13 +1742,19 @@ def run_gui(args):
             else:  # unknown desktop: use the whole virtual desktop
                 mx, my = self.root.winfo_vrootx(), self.root.winfo_vrooty()
                 mw, mh = self.root.winfo_vrootwidth(), self.root.winfo_vrootheight()
-            chrome_w = self.root.winfo_width() - self.canvas.winfo_width()
-            chrome_h = self.root.winfo_height() - self.canvas.winfo_height()
+            if content is self.body:
+                chrome_w = self.root.winfo_width() - self.canvas.winfo_width()
+                chrome_h = self.root.winfo_height() - self.canvas.winfo_height()
+            else:  # quiz tab: size to the panel that is packed instead of the canvas
+                chrome_w = max(24, self.root.winfo_width() - content.winfo_width())
+                chrome_h = max(90, self.root.winfo_height() - content.winfo_height())
             # Grow right/down only as far as this monitor allows from the current corner.
             max_w = max(360, mx + mw - x - 16)
             max_h = max(160, my + mh - y - 16)
-            w = max(360, min(self.body.winfo_reqwidth() + chrome_w + 8, max_w))
-            h = max(160, min(self.body.winfo_reqheight() + chrome_h + 8, max_h))
+            # Cards can be wider than the (canvas-width) body, so measure the children too.
+            need_w = max([content.winfo_reqwidth()] + [c.winfo_reqwidth() for c in content.winfo_children()])
+            w = max(420 if content is not self.body else 360, min(need_w + chrome_w + 12, max_w))
+            h = max(160, min(content.winfo_reqheight() + chrome_h + 8, max_h))
             if not force and self.root.winfo_width() <= max_w and self.root.winfo_height() <= max_h:
                 w = max(w, self.root.winfo_width())
                 h = max(h, self.root.winfo_height())
@@ -1281,7 +1774,8 @@ def run_gui(args):
             names = tk.Frame(head, bg=CARD)
             names.pack(side="left", padx=(6, 10))
             tk.Label(names, text=e["champion"], fg=FG, bg=CARD, font=(UI_FONT, 12, "bold")).pack(anchor="w")
-            sub = " · ".join(x for x in (e["position"], e["player"][:16]) if x)
+            sub = " · ".join(x for x in (e["position"], e["player"][:16],
+                                         f"Lv {e['level']}" if e.get("level") else "") if x)
             if sub:
                 tk.Label(names, text=sub, fg=MUTED, bg=CARD, font=(UI_FONT, 8)).pack(anchor="w")
 
@@ -1324,6 +1818,10 @@ def run_gui(args):
                     sep = " · " if a["cd"] != "—" else ""
                     tk.Label(cds, text=sep + a["recharge"], fg=RECHARGE_FG, bg=CARD,
                              font=(MONO_FONT, 10)).pack(side="left")
+                if a.get("now") is not None and e.get("level"):
+                    maxed = a["rank"] >= a["maxrank"]
+                    tk.Label(cds, text=f"  now {a['now']:g}s R{a['rank']}", fg=MAX_FG if maxed else NOW_FG,
+                             bg=CARD, font=(MONO_FONT, 10, "bold")).pack(side="left")
                 col += 1
                 if self.show_ranges.get() and a["range"] != "—":
                     rng = tk.Frame(rows, bg=CARD)
