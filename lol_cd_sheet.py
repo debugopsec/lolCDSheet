@@ -1557,6 +1557,9 @@ def run_gui(args):
             self._render_key = None
             self._render_geo = None
             self._card_refs = []
+            self._render_cols = 0
+            self._card_w = 0
+            self._reflow_job = None
             self._note = None
             self._wheel_bound = False
 
@@ -1565,7 +1568,8 @@ def run_gui(args):
             self.topmost = tk.BooleanVar(value=not args.no_topmost)
             self.show_names = tk.BooleanVar(value=not args.no_names)
             self.show_ranges = tk.BooleanVar(value=not args.no_ranges)
-            self.columns = tk.IntVar(value=max(1, min(5, args.columns)))
+            cols_arg = str(args.columns).strip()
+            self.columns = tk.StringVar(value=cols_arg if cols_arg in ("1", "2", "3", "4", "5") else "Auto")
             root.attributes("-topmost", self.topmost.get())
             # Remember where the window was last time (and its size). If the saved spot is no longer on
             # any monitor (unplugged display, resolution change), fall back to the top-left corner.
@@ -1610,9 +1614,10 @@ def run_gui(args):
             tk.Checkbutton(self.sheet_opts, text="Names", variable=self.show_names,
                            command=lambda: self.rerender(refit=True), **opts).pack(side="right")
             tk.Label(self.sheet_opts, text="Cols", fg=MUTED, bg=BG, font=(UI_FONT, 9)).pack(side="right", padx=(8, 2))
-            tk.Spinbox(self.sheet_opts, from_=1, to=5, width=2, textvariable=self.columns,
-                       command=lambda: self.rerender(refit=True),
-                       bg=CARD, fg=FG, buttonbackground=CARD, relief="flat", font=(UI_FONT, 9)).pack(side="right")
+            tk.Spinbox(self.sheet_opts, values=("Auto", "1", "2", "3", "4", "5"), width=4,
+                       textvariable=self.columns, command=lambda: self.rerender(refit=True),
+                       bg=CARD, fg=FG, buttonbackground=CARD, relief="flat",
+                       font=(UI_FONT, 9)).pack(side="right")
 
             # Scrollable body
             wrap = tk.Frame(root, bg=BG)
@@ -1993,11 +1998,33 @@ def run_gui(args):
             if self.canvas.bbox("all") and self.canvas.bbox("all")[3] > self.canvas.winfo_height():
                 self.canvas.yview_scroll(int(-e.delta / 120), "units")
 
+        def cols_count(self) -> int:
+            """Cards per row: the fixed choice from the Cols box, or as many as fit the window width."""
+            try:
+                value = str(self.columns.get()).strip()
+            except tk.TclError:
+                value = "Auto"
+            if value in ("1", "2", "3", "4", "5"):
+                return int(value)
+            width = self.canvas.winfo_width()
+            card = max(420, getattr(self, "_card_w", 0) or 470)
+            return max(1, min(5, int(max(width - 20, 1) // (card + 6))))
+
+        def _auto_reflow(self):
+            """After the user resizes the window: pick a new column count in Auto mode."""
+            self._reflow_job = None
+            if str(self.columns.get()).strip() in ("1", "2", "3", "4", "5"):
+                return
+            if self.cols_count() != self._render_cols:
+                self.rerender()
+
         def _on_canvas_resize(self, e):
             self.canvas.itemconfigure(self._body_id, width=max(1, e.width))
             self.canvas.configure(scrollregion=self.canvas.bbox("all"))
             if self._note is not None:
                 self._note.configure(wraplength=max(240, e.width - 24))
+            if self._reflow_job is None and self.view:
+                self._reflow_job = self.root.after(120, self._auto_reflow)
 
         def _on_body_resize(self, _e=None):
             self.canvas.configure(scrollregion=self.canvas.bbox("all"))
@@ -2058,15 +2085,13 @@ def run_gui(args):
         def rerender(self, refit: bool = False):
             if not self.view:
                 return
-            try:
-                cols = max(1, min(5, int(self.columns.get())))
-            except (tk.TclError, ValueError):
-                cols = 1
+            cols = self.cols_count()
             key = self.render_key(cols)
             if key == self._render_key:
                 self._update_live_fields()  # level / "now" changed only: no rebuild
                 return
             self._render_key = key
+            self._render_cols = cols
             # Hide the body while it is rebuilt, then show it again: one paint instead of dozens.
             self.canvas.itemconfigure(self._body_id, state="hidden")
             for w in self.body.winfo_children():
@@ -2082,6 +2107,8 @@ def run_gui(args):
                     card, ref = self.card(grid, e)
                     card.grid(row=i // cols, column=i % cols, sticky="nsew", padx=3, pady=3)
                     self._card_refs.append(ref)
+                    if cols == 1:  # only a single column gives the card its natural width
+                        self._card_w = max(getattr(self, "_card_w", 0), card.winfo_reqwidth())
             self._update_live_fields()
             note = ("Base cooldowns before ability haste (Data Dragon; charge recharge times from CommunityDragon). "
                     "\"recharge ×N\" = time per charge, N max charges. \"Q 10s\" = that ability's cooldown at "
@@ -2123,7 +2150,12 @@ def run_gui(args):
             max_h = max(160, my + mh - y - 16)
             # Cards can be wider than the (canvas-width) body, so measure the children too.
             need_w = max([content.winfo_reqwidth()] + [c.winfo_reqwidth() for c in content.winfo_children()])
-            w = max(420 if content is not self.body else 360, min(need_w + chrome_w + 12, max_w))
+            fixed_cols = str(self.columns.get()).strip() in ("1", "2", "3", "4", "5")
+            if content is self.body and not fixed_cols and self._render_geo is not None:
+                # Auto columns: the window width is the user's business, cards reflow to it.
+                w = self.root.winfo_width()
+            else:
+                w = max(420 if content is not self.body else 360, min(need_w + chrome_w + 12, max_w))
             h = max(160, min(content.winfo_reqheight() + chrome_h + 8, max_h))
             if not force and self.root.winfo_width() <= max_w and self.root.winfo_height() <= max_h:
                 w = max(w, self.root.winfo_width())
@@ -2212,7 +2244,7 @@ def main():
     ap.add_argument("--console", action="store_true", help="print to the terminal instead of opening a window")
     ap.add_argument("--demo", nargs="*", metavar="CHAMPION",
                     help="preview with sample enemies instead of a live game (default: %s)" % ", ".join(DEFAULT_DEMO))
-    ap.add_argument("--columns", type=int, default=1, help="cards per row in the window (1-5, default 1)")
+    ap.add_argument("--columns", default="auto", help="cards per row: auto (default) or 1-5")
     ap.add_argument("--no-names", action="store_true", help="hide ability names (more compact)")
     ap.add_argument("--no-ranges", action="store_true", help="hide ability cast ranges")
     ap.add_argument("--no-topmost", action="store_true", help="don't keep the window above other windows")
