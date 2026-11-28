@@ -32,7 +32,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+ROOT = HERE.parent
+sys.path.insert(0, str(ROOT))
 import lol_cd_sheet as app  # noqa: E402
 
 UA_BROWSER = {
@@ -365,7 +366,7 @@ def main():
         print("Nothing was modified.")
         return
 
-    target = HERE / "lol_cd_sheet.py"
+    target = ROOT / "lol_cd_sheet.py"
     src = target.read_text(encoding="utf-8")
     src = replace_block(src, "WIKI_RANGES = {",
                         dict_block("WIKI_RANGES = {", sorted(ranges.items()), 1))

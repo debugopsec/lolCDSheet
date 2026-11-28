@@ -1,7 +1,7 @@
 @echo off
 rem Optional: build a single LoLCooldownSheet.exe that runs without Python.
 rem Needs Python once; the .exe itself needs nothing.
-cd /d "%~dp0"
+cd /d "%~dp0.."
 where python >nul 2>nul
 if errorlevel 1 (
     echo.
